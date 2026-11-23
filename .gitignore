@@ -1,0 +1,31 @@
+# Dependencias y compilados
+node_modules/
+dist/
+dist-electron/
+release/
+.vite/
+*.log
+.DS_Store
+
+# Copias que deja la aplicación al sobrescribir un fuente
+*.bak
+
+# Variables de entorno y secretos (la conexión al AS400 vive fuera del proyecto, en la carpeta
+# de datos de la aplicación: conexion-as400.json)
+.env
+.env.*
+conexion-as400.json
+
+# Resultados de los sondeos del FTP: llevan el servidor y el usuario.
+sondeo-ftp-resultado.txt
+sondeo-tipos-resultado.txt
+
+# Accesos directos de este equipo
+*.lnk
+
+# Fuentes reales del IBM i (pueden ser de una empresa): fuera del repositorio hasta decidir
+# si se publican. Las pruebas que las usan (QDDSSRC, QDSPSRC) necesitan esas carpetas.
+QCBLSRC/
+QDDSSRC/
+QDSPSRC/
+Fuentes Generador/

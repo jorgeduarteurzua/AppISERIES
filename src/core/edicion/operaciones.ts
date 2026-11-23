@@ -1,0 +1,655 @@
+/**
+ * Operaciones de edición sobre el modelo `PantallaDSPF`.
+ *
+ * Todas son puras e inmutables: reciben una pantalla y devuelven una pantalla
+ * nueva sin modificar la original. Eso permite deshacer/rehacer guardando
+ * versiones anteriores y facilita las pruebas. Los ids de registros y
+ * elementos se conservan entre versiones.
+ */
+
+import type {
+  Campo,
+  Constante,
+  Elemento,
+  IndicadorCond,
+  Keyword,
+  PantallaDSPF,
+  Registro,
+  TamanoPantalla,
+  TeclaFuncion,
+} from '../modelo/pantalla';
+import { TAMANO_24X80 } from '../modelo/pantalla';
+import { nuevoId } from '../modelo/ids';
+
+// ---------------------------------------------------------------------------
+// Utilidades internas
+// ---------------------------------------------------------------------------
+
+function clonar<T>(x: T): T {
+  return structuredClone(x);
+}
+
+function kw(nombre: string, parametros = '', indicadores: IndicadorCond[] = []): Keyword {
+  return { nombre: nombre.toUpperCase(), parametros, indicadores };
+}
+
+function buscarRegistro(p: PantallaDSPF, regId: string): Registro {
+  const r = p.registros.find((x) => x.id === regId);
+  if (!r) throw new Error(`No existe el registro con id ${regId}.`);
+  return r;
+}
+
+function buscarElemento(r: Registro, elId: string): Elemento {
+  const e = r.elementos.find((x) => x.id === elId);
+  if (!e) throw new Error(`No existe el elemento con id ${elId} en ${r.nombre}.`);
+  return e;
+}
+
+/** Nombre en mayúsculas, sin espacios en los extremos y con '_' en vez de espacios. */
+export function normalizarNombre(texto: string): string {
+  return texto.trim().toUpperCase().replace(/\s+/g, '_');
+}
+
+/** Primer nombre libre de la forma BASE01, BASE02... (máximo 10 caracteres). */
+export function nombreLibre(existentes: string[], base: string): string {
+  const usados = new Set(existentes.map((n) => n.toUpperCase()));
+  const raiz = base.slice(0, 8);
+  for (let i = 1; i < 100; i++) {
+    const candidato = `${raiz}${String(i).padStart(2, '0')}`;
+    if (!usados.has(candidato)) return candidato;
+  }
+  return `${raiz}99`;
+}
+
+function hayRegistroConNombre(p: PantallaDSPF, nombre: string, exceptoId?: string): boolean {
+  return p.registros.some(
+    (r) => r.id !== exceptoId && r.nombre.toUpperCase() === nombre.toUpperCase(),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pantalla
+// ---------------------------------------------------------------------------
+
+export interface VentanaDef {
+  fila: number;
+  columna: number;
+  alto: number;
+  ancho: number;
+}
+
+/** Ventana por defecto: la habitual de 74 x 20 en (2,2), ajustada al tamaño de pantalla. */
+export function ventanaPorDefecto(p: PantallaDSPF): VentanaDef {
+  return {
+    fila: 2,
+    columna: 2,
+    alto: Math.max(1, Math.min(20, p.tamano.filas - 4)),
+    ancho: Math.max(1, Math.min(74, p.tamano.columnas - 6)),
+  };
+}
+
+/** Crea una pantalla nueva con DSPSIZ, INDARA y un registro vacío REG01. */
+export function crearPantalla(
+  nombre: string,
+  tamano: TamanoPantalla = TAMANO_24X80,
+): PantallaDSPF {
+  const p: PantallaDSPF = {
+    nombre,
+    tamano: { ...tamano },
+    keywordsArchivo: [
+      kw('DSPSIZ', `${tamano.filas} ${tamano.columnas} ${tamano.codigo}`),
+      kw('INDARA'),
+    ],
+    teclasFuncion: [],
+    registros: [],
+    advertencias: [],
+  };
+  return agregarRegistro(p, { tipo: 'normal', nombre: 'REG01' }).pantalla;
+}
+
+/** Cambia el tamaño de pantalla y mantiene sincronizado DSPSIZ. */
+export function cambiarTamano(p: PantallaDSPF, tamano: TamanoPantalla): PantallaDSPF {
+  const n = clonar(p);
+  n.tamano = { ...tamano };
+  const parametros = `${tamano.filas} ${tamano.columnas} ${tamano.codigo}`;
+  const existente = n.keywordsArchivo.find((k) => k.nombre === 'DSPSIZ');
+  if (existente) existente.parametros = parametros;
+  else n.keywordsArchivo.unshift(kw('DSPSIZ', parametros));
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Registros
+// ---------------------------------------------------------------------------
+
+export type OpcionesRegistro =
+  | {
+      tipo: 'normal';
+      nombre: string;
+      ventana?: VentanaDef;
+      tituloArriba?: string;
+      tituloAbajo?: string;
+    }
+  | {
+      tipo: 'subfile';
+      nombre: string;
+      nombreControl: string;
+      ventana?: VentanaDef;
+      tamanoSubfile?: number;
+      paginaSubfile?: number;
+      tituloArriba?: string;
+      tituloAbajo?: string;
+    };
+
+function keywordsVentana(v: VentanaDef): Keyword[] {
+  return [
+    kw('WINDOW', `${v.fila} ${v.columna} ${v.alto} ${v.ancho}`),
+    kw('WDWBORDER', "(*COLOR BLU) (*DSPATR RI) (*CHAR '        ')"),
+    kw('USRRSTDSP'),
+  ];
+}
+
+function registroVacio(nombre: string, keywords: Keyword[]): Registro {
+  return {
+    id: nuevoId('reg'),
+    nombre,
+    clase: 'normal',
+    keywords,
+    elementos: [],
+    indicadores: [],
+  };
+}
+
+/**
+ * Agrega un registro. Para 'subfile' crea el par SFL + SFLCTL con las
+ * keywords habituales; el id devuelto es el del control (el que se muestra).
+ */
+export function agregarRegistro(
+  p: PantallaDSPF,
+  opciones: OpcionesRegistro,
+): { pantalla: PantallaDSPF; registroId: string } {
+  const nombre = normalizarNombre(opciones.nombre);
+  if (nombre === '') throw new Error('El registro necesita un nombre.');
+  if (hayRegistroConNombre(p, nombre)) throw new Error(`Ya existe el registro ${nombre}.`);
+
+  const n = clonar(p);
+
+  if (opciones.tipo === 'normal') {
+    const reg = registroVacio(nombre, opciones.ventana ? keywordsVentana(opciones.ventana) : []);
+    if (opciones.ventana) {
+      ponerTitulo(reg, 'arriba', opciones.tituloArriba ?? null);
+      ponerTitulo(reg, 'abajo', opciones.tituloAbajo ?? null);
+    }
+    n.registros.push(reg);
+    return { pantalla: n, registroId: reg.id };
+  }
+
+  const nombreControl = normalizarNombre(opciones.nombreControl);
+  if (nombreControl === '') throw new Error('El control del subfile necesita un nombre.');
+  if (nombreControl === nombre) throw new Error('El subfile y su control deben tener nombres distintos.');
+  if (hayRegistroConNombre(p, nombreControl)) throw new Error(`Ya existe el registro ${nombreControl}.`);
+
+  const tamano = opciones.tamanoSubfile ?? 100;
+  const pagina = opciones.paginaSubfile ?? 10;
+  const ancho = opciones.ventana ? opciones.ventana.ancho : n.tamano.columnas;
+  const filaDetalle = 5;
+
+  // Registro SFL: una línea de detalle de salida.
+  const sfl = registroVacio(nombre, [kw('SFL')]);
+  sfl.clase = 'subfile';
+  sfl.elementos.push(
+    crearCampo({
+      nombre: 'DETSFL',
+      longitud: Math.max(1, Math.min(60, ancho - 2)),
+      uso: 'salida',
+      fila: filaDetalle,
+      columna: 2,
+    }),
+  );
+
+  // Registro de control del subfile.
+  const ctl = registroVacio(nombreControl, [
+    kw('SFLCTL', nombre),
+    kw('SFLSIZ', String(tamano).padStart(4, '0')),
+    kw('SFLPAG', String(pagina).padStart(4, '0')),
+    kw('SFLDSP', '', [{ numero: 30, negado: false }]),
+    kw('SFLDSPCTL', '', [{ numero: 31, negado: false }]),
+    kw('SFLCLR', '', [{ numero: 32, negado: false }]),
+    kw('SFLEND', '*SCRBAR *SCRBAR', [{ numero: 30, negado: false }]),
+    ...(opciones.ventana ? keywordsVentana(opciones.ventana) : []),
+  ]);
+  ctl.clase = 'control-subfile';
+  ctl.subfileControlado = nombre;
+  if (opciones.ventana) {
+    ponerTitulo(ctl, 'arriba', opciones.tituloArriba ?? null);
+    ponerTitulo(ctl, 'abajo', opciones.tituloAbajo ?? null);
+  }
+  ctl.elementos.push({
+    tipo: 'constante',
+    id: nuevoId('cte'),
+    fila: filaDetalle - 1,
+    columna: 2,
+    texto: 'Descripción',
+    keywords: [kw('DSPATR', 'HI')],
+    indicadores: [],
+  });
+
+  n.registros.push(sfl, ctl);
+  return { pantalla: n, registroId: ctl.id };
+}
+
+/** Elimina un registro. Un subfile y su control se eliminan juntos. */
+export function eliminarRegistro(p: PantallaDSPF, regId: string): PantallaDSPF {
+  const objetivo = buscarRegistro(p, regId);
+  const n = clonar(p);
+  const quitar = new Set<string>([regId]);
+
+  if (objetivo.clase === 'subfile') {
+    for (const r of n.registros) {
+      if (r.clase === 'control-subfile' && r.subfileControlado === objetivo.nombre) quitar.add(r.id);
+    }
+  } else if (objetivo.clase === 'control-subfile' && objetivo.subfileControlado) {
+    const sfl = n.registros.find(
+      (r) => r.clase === 'subfile' && r.nombre === objetivo.subfileControlado,
+    );
+    const otrosControles = n.registros.some(
+      (r) =>
+        r.id !== regId &&
+        r.clase === 'control-subfile' &&
+        r.subfileControlado === objetivo.subfileControlado,
+    );
+    if (sfl && !otrosControles) quitar.add(sfl.id);
+  }
+
+  n.registros = n.registros.filter((r) => !quitar.has(r.id));
+  return n;
+}
+
+/** Renombra un registro y actualiza las referencias (SFLCTL, ERASE, WINDOW). */
+export function renombrarRegistro(p: PantallaDSPF, regId: string, nuevoNombre: string): PantallaDSPF {
+  const nombre = normalizarNombre(nuevoNombre);
+  if (nombre === '') throw new Error('El registro necesita un nombre.');
+  if (hayRegistroConNombre(p, nombre, regId)) throw new Error(`Ya existe el registro ${nombre}.`);
+
+  const n = clonar(p);
+  const reg = buscarRegistro(n, regId);
+  const anterior = reg.nombre;
+  reg.nombre = nombre;
+
+  for (const r of n.registros) {
+    if (r.subfileControlado === anterior) r.subfileControlado = nombre;
+    for (const k of r.keywords) {
+      if (['SFLCTL', 'ERASE', 'WINDOW'].includes(k.nombre) && k.parametros.trim() === anterior) {
+        k.parametros = nombre;
+      }
+    }
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Elementos (constantes y campos)
+// ---------------------------------------------------------------------------
+
+export interface DatosCampo {
+  nombre: string;
+  longitud?: number;
+  decimales?: number;
+  tipoDato?: Campo['tipoDato'];
+  uso?: Campo['uso'];
+  fila: number | null;
+  columna: number | null;
+}
+
+function crearCampo(d: DatosCampo): Campo {
+  return {
+    tipo: 'campo',
+    id: nuevoId('campo'),
+    nombre: d.nombre,
+    longitud: d.longitud ?? 10,
+    decimales: d.decimales ?? 0,
+    tipoDato: d.tipoDato ?? 'A',
+    uso: d.uso ?? 'ambos',
+    fila: d.fila,
+    columna: d.columna,
+    keywords: [],
+    indicadores: [],
+    referencia: false,
+  };
+}
+
+export function agregarConstante(
+  p: PantallaDSPF,
+  regId: string,
+  fila: number,
+  columna: number,
+  texto = 'Texto',
+): { pantalla: PantallaDSPF; elementoId: string } {
+  const n = clonar(p);
+  const reg = buscarRegistro(n, regId);
+  const c: Constante = {
+    tipo: 'constante',
+    id: nuevoId('cte'),
+    fila,
+    columna,
+    texto,
+    keywords: [],
+    indicadores: [],
+  };
+  reg.elementos.push(c);
+  return { pantalla: n, elementoId: c.id };
+}
+
+export function agregarCampo(
+  p: PantallaDSPF,
+  regId: string,
+  datos: Omit<DatosCampo, 'nombre'> & { nombre?: string },
+): { pantalla: PantallaDSPF; elementoId: string } {
+  const n = clonar(p);
+  const reg = buscarRegistro(n, regId);
+  const existentes = reg.elementos.flatMap((e) => (e.tipo === 'campo' ? [e.nombre] : []));
+  const nombre = datos.nombre ? normalizarNombre(datos.nombre) : nombreLibre(existentes, 'CAMPO');
+  const campo = crearCampo({ ...datos, nombre });
+  reg.elementos.push(campo);
+  return { pantalla: n, elementoId: campo.id };
+}
+
+export function moverElemento(
+  p: PantallaDSPF,
+  regId: string,
+  elId: string,
+  fila: number,
+  columna: number,
+): PantallaDSPF {
+  const n = clonar(p);
+  const e = buscarElemento(buscarRegistro(n, regId), elId);
+  e.fila = fila;
+  e.columna = columna;
+  return n;
+}
+
+export type ParcheElemento = Partial<Omit<Campo, 'id' | 'tipo' | 'fila' | 'columna'>> &
+  Partial<Omit<Constante, 'id' | 'tipo' | 'fila' | 'columna'>> & {
+    // Un campo oculto no tiene posición: fila/columna pueden ser null.
+    fila?: number | null;
+    columna?: number | null;
+  };
+
+/**
+ * Cambia propiedades de un elemento. El nombre de un campo se normaliza. Si
+ * el uso pasa a oculto/programa, el campo pierde su posición (en DDS un campo
+ * oculto no se ubica en pantalla).
+ */
+export function actualizarElemento(
+  p: PantallaDSPF,
+  regId: string,
+  elId: string,
+  parche: ParcheElemento,
+): PantallaDSPF {
+  const n = clonar(p);
+  const e = buscarElemento(buscarRegistro(n, regId), elId);
+  const cambios: ParcheElemento = { ...parche };
+  if (e.tipo === 'campo' && typeof cambios.nombre === 'string') {
+    cambios.nombre = normalizarNombre(cambios.nombre);
+  }
+  Object.assign(e, cambios);
+  if (e.tipo === 'campo' && (e.uso === 'oculto' || e.uso === 'programa')) {
+    e.fila = null;
+    e.columna = null;
+  }
+  return n;
+}
+
+export function eliminarElemento(p: PantallaDSPF, regId: string, elId: string): PantallaDSPF {
+  const n = clonar(p);
+  const reg = buscarRegistro(n, regId);
+  buscarElemento(reg, elId); // valida que existe
+  reg.elementos = reg.elementos.filter((e) => e.id !== elId);
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Atributos de display y color
+// ---------------------------------------------------------------------------
+
+export type AtributoDisplay = 'HI' | 'UL' | 'RI' | 'BL' | 'ND' | 'PR';
+export const ATRIBUTOS_DISPLAY: AtributoDisplay[] = ['HI', 'UL', 'RI', 'BL', 'ND', 'PR'];
+export const COLORES = ['GRN', 'WHT', 'RED', 'TRQ', 'YLW', 'PNK', 'BLU'] as const;
+
+function dspatrIncondicionales(e: Elemento): Keyword[] {
+  return e.keywords.filter((k) => k.nombre === 'DSPATR' && k.indicadores.length === 0);
+}
+
+function valoresDspatr(k: Keyword): string[] {
+  return k.parametros.trim().split(/\s+/).filter((v) => v.length > 0);
+}
+
+export function tieneAtributo(e: Elemento, a: AtributoDisplay): boolean {
+  return dspatrIncondicionales(e).some((k) => valoresDspatr(k).includes(a));
+}
+
+/** Color fijo (keyword COLOR sin indicadores) o null si no tiene. */
+export function colorDe(e: Elemento): string | null {
+  const k = e.keywords.find((x) => x.nombre === 'COLOR' && x.indicadores.length === 0);
+  return k ? k.parametros.trim().toUpperCase() : null;
+}
+
+/** Activa o desactiva un atributo DSPATR (sin indicadores). Sin `activar`, lo alterna. */
+export function alternarAtributo(
+  p: PantallaDSPF,
+  regId: string,
+  elId: string,
+  atributo: AtributoDisplay,
+  activar?: boolean,
+): PantallaDSPF {
+  const n = clonar(p);
+  const e = buscarElemento(buscarRegistro(n, regId), elId);
+  const presente = tieneAtributo(e, atributo);
+  const quiere = activar ?? !presente;
+  if (quiere === presente) return n;
+
+  const kws = dspatrIncondicionales(e);
+  if (!quiere) {
+    for (const k of kws) {
+      const restantes = valoresDspatr(k).filter((v) => v !== atributo);
+      if (restantes.length === 0) e.keywords = e.keywords.filter((x) => x !== k);
+      else k.parametros = restantes.join(' ');
+    }
+  } else if (kws.length > 0) {
+    kws[0].parametros = [...valoresDspatr(kws[0]), atributo].join(' ');
+  } else {
+    e.keywords.push(kw('DSPATR', atributo));
+  }
+  return n;
+}
+
+/** Fija el color (GRN, WHT...) o lo quita con null. */
+export function establecerColor(
+  p: PantallaDSPF,
+  regId: string,
+  elId: string,
+  color: string | null,
+): PantallaDSPF {
+  const n = clonar(p);
+  const e = buscarElemento(buscarRegistro(n, regId), elId);
+  e.keywords = e.keywords.filter((k) => !(k.nombre === 'COLOR' && k.indicadores.length === 0));
+  if (color) e.keywords.push(kw('COLOR', color));
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Keywords genéricas
+// ---------------------------------------------------------------------------
+
+export type Destino =
+  | { tipo: 'archivo' }
+  | { tipo: 'registro'; regId: string }
+  | { tipo: 'elemento'; regId: string; elId: string };
+
+function listaKeywords(p: PantallaDSPF, d: Destino): Keyword[] {
+  if (d.tipo === 'archivo') return p.keywordsArchivo;
+  const reg = buscarRegistro(p, d.regId);
+  if (d.tipo === 'registro') return reg.keywords;
+  return buscarElemento(reg, d.elId).keywords;
+}
+
+export function agregarKeyword(
+  p: PantallaDSPF,
+  destino: Destino,
+  k: { nombre: string; parametros?: string; indicadores?: IndicadorCond[] },
+): PantallaDSPF {
+  const n = clonar(p);
+  listaKeywords(n, destino).push(kw(k.nombre, k.parametros ?? '', k.indicadores ?? []));
+  return n;
+}
+
+export function quitarKeyword(p: PantallaDSPF, destino: Destino, indice: number): PantallaDSPF {
+  const n = clonar(p);
+  const lista = listaKeywords(n, destino);
+  if (indice < 0 || indice >= lista.length) throw new Error('La keyword indicada no existe.');
+  lista.splice(indice, 1);
+  return n;
+}
+
+export function actualizarKeyword(
+  p: PantallaDSPF,
+  destino: Destino,
+  indice: number,
+  parche: Partial<Keyword>,
+): PantallaDSPF {
+  const n = clonar(p);
+  const lista = listaKeywords(n, destino);
+  if (indice < 0 || indice >= lista.length) throw new Error('La keyword indicada no existe.');
+  const nuevo = { ...lista[indice], ...parche };
+  if (typeof parche.nombre === 'string') nuevo.nombre = parche.nombre.trim().toUpperCase();
+  lista[indice] = nuevo;
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Ventana y títulos
+// ---------------------------------------------------------------------------
+
+/** Lee WINDOW(f c alto ancho) si está en forma numérica. */
+export function leerVentana(r: Registro): VentanaDef | null {
+  const k = r.keywords.find((x) => x.nombre === 'WINDOW');
+  if (!k) return null;
+  const nums = k.parametros.trim().split(/\s+/).map((v) => parseInt(v, 10));
+  if (nums.length < 4 || nums.slice(0, 4).some((v) => Number.isNaN(v))) return null;
+  return { fila: nums[0], columna: nums[1], alto: nums[2], ancho: nums[3] };
+}
+
+/** Define (o quita con null) la ventana de un registro. */
+export function establecerVentana(
+  p: PantallaDSPF,
+  regId: string,
+  v: VentanaDef | null,
+): PantallaDSPF {
+  const n = clonar(p);
+  const reg = buscarRegistro(n, regId);
+  if (v === null) {
+    reg.keywords = reg.keywords.filter(
+      (k) => !['WINDOW', 'WDWBORDER', 'WDWTITLE', 'USRRSTDSP'].includes(k.nombre),
+    );
+    return n;
+  }
+  const parametros = `${v.fila} ${v.columna} ${v.alto} ${v.ancho}`;
+  const existente = reg.keywords.find((k) => k.nombre === 'WINDOW');
+  if (existente) {
+    existente.parametros = parametros;
+  } else {
+    reg.keywords.push(...keywordsVentana(v));
+  }
+  return n;
+}
+
+function esTituloAbajo(k: Keyword): boolean {
+  return /\*BOTTOM\b/.test(k.parametros);
+}
+
+/** Texto del título de la ventana (arriba o abajo), o '' si no tiene. */
+export function leerTituloVentana(r: Registro, posicion: 'arriba' | 'abajo'): string {
+  const k = r.keywords.find(
+    (x) => x.nombre === 'WDWTITLE' && esTituloAbajo(x) === (posicion === 'abajo'),
+  );
+  if (!k) return '';
+  const m = /\*TEXT\s+'((?:[^']|'')*)'/.exec(k.parametros);
+  return m ? m[1].replace(/''/g, "'") : '';
+}
+
+function ponerTitulo(r: Registro, posicion: 'arriba' | 'abajo', texto: string | null): void {
+  const abajo = posicion === 'abajo';
+  const indice = r.keywords.findIndex((x) => x.nombre === 'WDWTITLE' && esTituloAbajo(x) === abajo);
+  if (texto === null || texto.trim() === '') {
+    if (indice >= 0) r.keywords.splice(indice, 1);
+    return;
+  }
+  const color = indice >= 0 ? (/\*COLOR\s+([A-Z]{3})/.exec(r.keywords[indice].parametros)?.[1] ?? 'WHT') : 'WHT';
+  const parametros =
+    `(*TEXT '${texto.replace(/'/g, "''")}') (*COLOR ${color})` + (abajo ? ' *BOTTOM' : '');
+  if (indice >= 0) r.keywords[indice].parametros = parametros;
+  else r.keywords.push(kw('WDWTITLE', parametros));
+}
+
+/** Define o quita (texto vacío/null) el título de arriba o de abajo de la ventana. */
+export function establecerTituloVentana(
+  p: PantallaDSPF,
+  regId: string,
+  posicion: 'arriba' | 'abajo',
+  texto: string | null,
+): PantallaDSPF {
+  const n = clonar(p);
+  ponerTitulo(buscarRegistro(n, regId), posicion, texto);
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Teclas de función
+// ---------------------------------------------------------------------------
+
+/** Texto de una tecla tal como se ve (con las comillas dobles ya resueltas). */
+export function textoLegibleTecla(t: TeclaFuncion): string {
+  return (t.texto ?? '').replace(/''/g, "'");
+}
+
+/** Agrega CFnn/CAnn. Por convención el indicador de respuesta es el número de la tecla. */
+export function agregarTecla(
+  p: PantallaDSPF,
+  t: { tipo: 'CF' | 'CA'; numero: number; texto?: string },
+): PantallaDSPF {
+  const n = clonar(p);
+  n.teclasFuncion.push({
+    tipo: t.tipo,
+    numero: t.numero,
+    respuestaInd: t.numero,
+    texto: t.texto !== undefined && t.texto !== '' ? t.texto.replace(/'/g, "''") : undefined,
+  });
+  return n;
+}
+
+export function quitarTecla(p: PantallaDSPF, indice: number): PantallaDSPF {
+  const n = clonar(p);
+  if (indice < 0 || indice >= n.teclasFuncion.length) throw new Error('La tecla indicada no existe.');
+  n.teclasFuncion.splice(indice, 1);
+  return n;
+}
+
+export function actualizarTecla(
+  p: PantallaDSPF,
+  indice: number,
+  parche: { tipo?: 'CF' | 'CA'; numero?: number; texto?: string },
+): PantallaDSPF {
+  const n = clonar(p);
+  const t = n.teclasFuncion[indice];
+  if (!t) throw new Error('La tecla indicada no existe.');
+  if (parche.tipo !== undefined) t.tipo = parche.tipo;
+  if (parche.numero !== undefined) {
+    // Si el indicador de respuesta seguía la convención, acompaña al número.
+    if (t.respuestaInd === t.numero) t.respuestaInd = parche.numero;
+    t.numero = parche.numero;
+  }
+  if (parche.texto !== undefined) {
+    t.texto = parche.texto === '' ? undefined : parche.texto.replace(/'/g, "''");
+  }
+  return n;
+}

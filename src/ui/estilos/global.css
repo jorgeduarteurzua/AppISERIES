@@ -1,0 +1,83 @@
+:root {
+  /* Tema «IBM i oscuro»: azules de IBM, títulos en turquesa 5250 y contraste AA (4,5:1). */
+  --fondo: #0b1426;
+  --fondo-panel: #111e36;
+  --fondo-barra: #16284a;
+  --fondo-nav: #002d9c;
+  --fondo-elevado: #1a2d50;
+  --fondo-hover: #223a66;
+  --fondo-entrada: #08101f;
+  --fondo-boton: #2a4373;
+  --fondo-boton-hover: #35558f;
+  --borde: #2a4170;
+  --borde-suave: #1c2f52;
+  --borde-fuerte: #4a6aa8;
+  --texto: #f2f4f8;
+  --texto-tenue: #a9bad6;
+  --titulo: #3ddbd9;
+  --acento: #0f62fe;
+  --acento-claro: #4589ff;
+  --enlace: #78a9ff;
+  --seleccion: #1b3f80;
+  --seleccion-activa: #0f62fe;
+  --ok: #42be65;
+  --aviso: #f1c21b;
+  --error-fondo: #5c1a22;
+  --error-texto: #ffd7d9;
+  --peligro: #b81922;
+  --peligro-hover: #da1e28;
+  --llave: #8e6a00;
+  --llave-hover: #b28600;
+  --guardar: #198038;
+  --guardar-hover: #24a148;
+  --etq-verde: #1f5c34;
+  --etq-azul: #213d73;
+  --etq-ocre: #6b4a1a;
+  --deshabilitado-fondo: #1f2f4d;
+  --deshabilitado-texto: #7d91b3;  /* Paleta de pantalla 5250 (fondo negro, campos en colores de terminal) */
+  --t-verde: #33ff33;
+  --t-blanco: #e8e8e8;
+  --t-rojo: #ff5555;
+  --t-turquesa: #33dddd;
+  --t-amarillo: #ffff55;
+  --t-rosa: #ff77ff;
+  --t-azul: #6699ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+}
+
+button {
+  background: var(--acento);
+  color: #ffffff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+button:hover {
+  background: var(--acento-claro);
+}
+
+button:disabled {
+  background: var(--deshabilitado-fondo);
+  color: var(--deshabilitado-texto);
+  cursor: not-allowed;
+}
