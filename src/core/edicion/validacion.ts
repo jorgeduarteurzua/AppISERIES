@@ -10,7 +10,7 @@
 import type { Campo, IndicadorCond, Keyword, PantallaDSPF, Registro } from '../modelo/pantalla';
 import { cajasElementos, dimensionElemento, marcoDe, type Caja } from '../render/geometria';
 import { ventanaDe } from '../render/lienzo';
-import { NOMBRE_AYUDA, TECLAS_BASICAS, formatoDeAyuda, textoDeTecla } from './operaciones';
+import { NOMBRE_AYUDA, TECLAS_BASICAS, formatoDeAyuda, teclasBasicasNoCF, textoDeTecla } from './operaciones';
 
 export interface Problema {
   nivel: 'error' | 'aviso';
@@ -493,6 +493,13 @@ export function validar(p: PantallaDSPF): Problema[] {
       salida.push({
         nivel: 'aviso',
         mensaje: `Faltan las teclas ${faltan.map((b) => `F${b.numero} (${b.texto})`).join(', ')}: use «Teclas y ayuda».`,
+      });
+    }
+    const noCF = teclasBasicasNoCF(p);
+    if (noCF.length > 0) {
+      salida.push({
+        nivel: 'aviso',
+        mensaje: `Las teclas ${noCF.map((t) => `F${t.numero} (${t.tipo})`).join(', ')} deben ser CF, para que el programa las reciba como tecla de funcion.`,
       });
     }
     const ayuda = formatoDeAyuda(p);

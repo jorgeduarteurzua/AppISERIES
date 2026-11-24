@@ -52,8 +52,13 @@ export interface PeticionEnvio {
   /** Biblioteca donde queda el objeto compilado. */
   bibliotecaObjeto: string;
   compilar: boolean;
-  /** Reemplazar el objeto si ya existe. En un PF borra sus datos. */
+  /**
+   * Reemplazar el objeto si ya existe. En un PF o LF (que no tienen REPLACE) se borra el archivo
+   * y se crea de nuevo; en un PF eso borra sus datos.
+   */
   reemplazar: boolean;
+  /** Solo borrar el archivo (PF o LF) si existe, sin enviar el fuente ni compilar. */
+  soloBorrar?: boolean;
   /** Crear el archivo fuente si no existe. */
   crearArchivoFuente: boolean;
   /** Bibliotecas que se agregan a la lista antes de compilar (p.ej. donde está la tabla). */

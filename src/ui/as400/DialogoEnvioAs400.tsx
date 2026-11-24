@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { comandoCompilacion } from '@core/as400/comandos';
+import { comandosCompilacion, seBorraAntesDeCrear } from '@core/as400/comandos';
 import { TIPOS_FUENTE } from '@core/as400/tipos';
 import type { DestinoGuardado, PeticionEnvio, ResultadoEnvio, TipoFuente } from '@core/as400/tipos';
 import { normalizarNombre, validarPeticion } from '@core/as400/validacion';
@@ -75,7 +75,10 @@ function Formulario({ fuentes }: { fuentes: FuenteEnvio[] }) {
     bibliotecasExtra,
   });
 
-  const incluidas = filas.filter((f) => f.incluido);
+  // Un lógico va después de su físico: se borra antes y se crea después.
+  const incluidas = filas.filter((f) => f.incluido).sort((a, b) => Number(a.tipo === 'LF') - Number(b.tipo === 'LF'));
+  const hayArchivos = incluidas.some((f) => seBorraAntesDeCrear(f.tipo));
+  const soloArchivos = hayArchivos && incluidas.every((f) => seBorraAntesDeCrear(f.tipo));
 
   const enviar = async () => {
     setError(null);
@@ -95,7 +98,7 @@ function Formulario({ fuentes }: { fuentes: FuenteEnvio[] }) {
     }
     if (compilar && reemplazar && incluidas.some((f) => f.tipo === 'PF')) {
       const seguir = window.confirm(
-        'Compilar un archivo físico (PF) con REPLACE(*YES) borra los datos del archivo si ya existe. ¿Continuar?',
+        'Para volver a crear un archivo físico (PF) que ya existe se borra el archivo con todos sus datos y luego se crea de nuevo. ¿Continuar?',
       );
       if (!seguir) return;
     }
@@ -119,6 +122,17 @@ function Formulario({ fuentes }: { fuentes: FuenteEnvio[] }) {
         bibliotecasExtra,
       });
       if (guardado.conexion) establecerConexion(guardado.conexion);
+
+      // Primero se borran los lógicos que ya existen: si no, el físico no se puede borrar.
+      if (compilar && reemplazar) {
+        for (const f of incluidas.filter((x) => x.tipo === 'LF')) {
+          const r = await window.api.as400.enviar({ ...peticionDe(f), soloBorrar: true });
+          if (!r.ok) {
+            setResultados((rs) => ({ ...rs, [f.clave]: r }));
+            return;
+          }
+        }
+      }
 
       // En orden: lo que sigue puede depender de lo anterior (el programa usa la pantalla).
       for (const f of incluidas) {
@@ -245,7 +259,11 @@ function Formulario({ fuentes }: { fuentes: FuenteEnvio[] }) {
           </label>
           <label className="form-check">
             <input type="checkbox" checked={reemplazar} onChange={(e) => setReemplazar(e.target.checked)} />
-            Reemplazar el objeto si ya existe
+            {soloArchivos
+              ? 'Borrar y crear de nuevo si ya existe'
+              : hayArchivos
+                ? 'Reemplazar el objeto si ya existe (PF y LF: borrar y crear de nuevo)'
+                : 'Reemplazar el objeto si ya existe'}
           </label>
         </>
       )}
@@ -264,7 +282,7 @@ function Formulario({ fuentes }: { fuentes: FuenteEnvio[] }) {
           <summary>Comandos de compilación</summary>
           <pre>
             {normalizarNombre(bibObjeto) !== '' && normalizarNombre(bibFuente) !== ''
-              ? incluidas.map((f) => comandoCompilacion(peticionDe(f))).join('\n')
+              ? incluidas.flatMap((f) => comandosCompilacion(peticionDe(f))).join('\n')
               : 'Indica las bibliotecas para ver los comandos.'}
           </pre>
         </details>

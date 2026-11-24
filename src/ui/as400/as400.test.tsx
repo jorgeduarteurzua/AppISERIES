@@ -280,8 +280,41 @@ describe('enviar al AS400', () => {
     render(<DialogoEnvioAs400 />);
     fireEvent.click(screen.getByRole('button', { name: 'Enviar y compilar' }));
     await waitFor(() => expect(confirmar).toHaveBeenCalled());
-    expect(String(confirmar.mock.calls[0][0])).toMatch(/borra los datos/);
+    expect(String(confirmar.mock.calls[0][0])).toMatch(/se borra el archivo con todos sus datos/);
     expect(api.as400.enviar).not.toHaveBeenCalled();
+  });
+
+  it('con PF y LF: borra el lógico, crea el físico y luego el lógico; la casilla dice lo que hace', async () => {
+    window.confirm = vi.fn().mockReturnValue(true);
+    act(() => {
+      useAs400.getState().establecerConexion(conexion());
+      useAs400.getState().abrirEnvio([
+        { ...fuentes[0], clave: 'lf', tipo: 'LF', miembro: 'TABLA1L1', etiqueta: 'Lógico' },
+        { ...fuentes[0], clave: 'pf', tipo: 'PF', miembro: 'TABLA1', etiqueta: 'Físico' },
+      ]);
+    });
+    render(<DialogoEnvioAs400 />);
+    expect(screen.getByLabelText('Borrar y crear de nuevo si ya existe')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar y compilar' }));
+    await waitFor(() => expect(api.as400.enviar).toHaveBeenCalledTimes(3));
+    const llamadas = api.as400.enviar.mock.calls.map((c) => c[0]);
+    expect(llamadas.map((c) => `${c.tipo}${c.soloBorrar ? ':borrar' : ''}`)).toEqual(['LF:borrar', 'PF', 'LF']);
+  });
+
+  it('si no se puede borrar el lógico, no sigue', async () => {
+    window.confirm = vi.fn().mockReturnValue(true);
+    api.as400.enviar.mockResolvedValueOnce(resultado(false, 'DLTF falló'));
+    act(() => {
+      useAs400.getState().establecerConexion(conexion());
+      useAs400.getState().abrirEnvio([
+        { ...fuentes[0], clave: 'pf', tipo: 'PF', miembro: 'TABLA1', etiqueta: 'Físico' },
+        { ...fuentes[0], clave: 'lf', tipo: 'LF', miembro: 'TABLA1L1', etiqueta: 'Lógico' },
+      ]);
+    });
+    render(<DialogoEnvioAs400 />);
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar y compilar' }));
+    await waitFor(() => expect(api.as400.enviar).toHaveBeenCalledTimes(1));
+    expect(api.as400.enviar.mock.calls[0][0]).toMatchObject({ tipo: 'LF', soloBorrar: true });
   });
 });
 

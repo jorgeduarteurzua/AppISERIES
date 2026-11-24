@@ -15,6 +15,8 @@ interface Guion {
   listado?: string;
   /** Listado que ya había antes de compilar (si falta, antes no hay ninguno). */
   listadoAntes?: string;
+  /** Lo que imprime DSPDBR (archivos que dependen del que se quiere borrar). */
+  dependencias?: string;
   /** Texto que devuelve cada comando de lista (NLST, LIST). Si falta, el comando falla. */
   listados?: Record<string, string>;
   /** Contenido de los miembros que se pueden bajar, por nombre de miembro. */
@@ -42,7 +44,8 @@ function crear(guion: Guion = {}) {
       if (guion.miembros) throw new Error(`426 Member ${mbr} not found.`);
       const compilo = comandos.some((c) => /^RCMD (CRT|RUNSQLSTM)/.test(c) && !c.startsWith('RCMD CRTPF FILE(QTEMP') && !c.startsWith('RCMD CRTSRCPF'));
       // Solo el listado del compilador tiene un antes y un después.
-      const texto = compilo || !ruta.includes('APPLISTADO') ? guion.listado : guion.listadoAntes;
+      const dspdbr = comandos.some((c) => c.startsWith('RCMD DSPDBR'));
+      const texto = dspdbr && guion.dependencias !== undefined ? guion.dependencias : compilo || !ruta.includes('APPLISTADO') ? guion.listado : guion.listadoAntes;
       if (texto === undefined) throw new Error('sin listado');
       return Buffer.from(texto, 'latin1');
     },
@@ -84,6 +87,69 @@ describe('prepararTexto', () => {
   it('usa CRLF, quita líneas finales en blanco y codifica en Windows-1252', () => {
     expect(prepararTexto('a\nñ\n\n\n').toString('latin1')).toBe('a\r\n\xf1\r\n');
     expect(prepararTexto('a\r\nb').toString('latin1')).toBe('a\r\nb\r\n');
+  });
+});
+
+describe('ejecutarEnvio: PF y LF no tienen REPLACE', () => {
+  const pf = (extra: Partial<PeticionEnvio> = {}) => peticion({ tipo: 'PF', miembro: 'tabla1', archivoFuente: 'qddssrc', bibliotecasExtra: [], ...extra });
+
+  it('si el archivo existe lo borra y lo crea de nuevo, sin REPLACE y con SIZE(*NOMAX)', async () => {
+    const f = crear();
+    const r = await ejecutarEnvio(f.abrir, cred, pf());
+    expect(r.ok).toBe(true);
+    const borrar = f.comandos.indexOf('RCMD DLTF FILE(MIOBJ/TABLA1)');
+    const crearPf = f.comandos.indexOf('RCMD CRTPF FILE(MIOBJ/TABLA1) SRCFILE(MIBIB/QDDSSRC) SRCMBR(TABLA1) SIZE(*NOMAX)');
+    expect(borrar).toBeGreaterThan(-1);
+    expect(crearPf).toBeGreaterThan(borrar);
+    expect(f.comandos.some((c) => c.includes('REPLACE(*YES)'))).toBe(false);
+    expect(r.pasos.find((x) => x.nombre === 'Borrar MIOBJ/TABLA1')?.ok).toBe(true);
+  });
+
+  it('si no existe no lo borra', async () => {
+    const f = crear({ respuestas: [[/CHKOBJ OBJ\(MIOBJ\/TABLA1\)/, { codigo: 550, mensaje: 'CPF9801' }]] });
+    const r = await ejecutarEnvio(f.abrir, cred, pf());
+    expect(r.ok).toBe(true);
+    expect(f.comandos.some((c) => c.includes('DLTF'))).toBe(false);
+    expect(f.comandos.some((c) => c.startsWith('RCMD CRTPF FILE(MIOBJ/TABLA1)'))).toBe(true);
+  });
+
+  it('sin reemplazar no borra nada', async () => {
+    const f = crear();
+    await ejecutarEnvio(f.abrir, cred, pf({ reemplazar: false }));
+    expect(f.comandos.some((c) => c.includes('DLTF') || c.includes('CHKOBJ OBJ(MIOBJ'))).toBe(false);
+  });
+
+  it('si no se puede borrar no lo crea y muestra los archivos que dependen de él', async () => {
+    const f = crear({
+      respuestas: [[/DLTF FILE\(MIOBJ\/TABLA1\)/, { codigo: 550, mensaje: 'CPF3220 Hay dependientes' }]],
+      dependencias: 'TABLA1L1   LIBJDU   Logico\r\n',
+    });
+    const r = await ejecutarEnvio(f.abrir, cred, pf());
+    expect(r.ok).toBe(false);
+    const paso = r.pasos.find((x) => x.nombre === 'Borrar MIOBJ/TABLA1')!;
+    expect(paso.ok).toBe(false);
+    expect(paso.mensaje).toContain('TABLA1L1');
+    expect(paso.mensaje).toContain('no se crea de nuevo');
+    expect(f.comandos).toContain('RCMD DSPDBR FILE(MIOBJ/TABLA1) OUTPUT(*PRINT)');
+    expect(f.comandos.some((c) => c.startsWith('RCMD CRTPF FILE(MIOBJ/TABLA1)'))).toBe(false);
+    expect(f.comandos.some((c) => c.startsWith('RCMD DLTF') && !c.includes('TABLA1'))).toBe(false);
+  });
+
+  it('si no se puede traer la lista de dependientes, dice qué ejecutar en el AS400', async () => {
+    const f = crear({ respuestas: [[/DLTF FILE\(MIOBJ\/TABLA1\)/, { codigo: 550, mensaje: 'CPF3220' }]] });
+    const r = await ejecutarEnvio(f.abrir, cred, pf());
+    const paso = r.pasos.find((x) => x.nombre === 'Borrar MIOBJ/TABLA1')!;
+    expect(paso.mensaje).toContain('No se pudo traer el listado de dependientes');
+    expect(paso.mensaje).toContain('DSPDBR FILE(MIOBJ/TABLA1) OUTPUT(*)');
+  });
+
+  it('soloBorrar borra el lógico sin enviar el fuente ni compilar', async () => {
+    const f = crear();
+    const r = await ejecutarEnvio(f.abrir, cred, pf({ tipo: 'LF', miembro: 'tabla1l1', soloBorrar: true }));
+    expect(r.ok).toBe(true);
+    expect(f.subidas).toHaveLength(0);
+    expect(f.comandos).toContain('RCMD DLTF FILE(MIOBJ/TABLA1L1)');
+    expect(f.comandos.some((c) => c.includes('CRTLF'))).toBe(false);
   });
 });
 

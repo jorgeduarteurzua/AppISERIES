@@ -2,7 +2,9 @@ import iconv from 'iconv-lite';
 import {
   RUTA_LISTADO,
   RUTA_TIPOS,
+  SPOOL_DEPENDENCIAS,
   comandoAgregarBiblioteca,
+  comandoBorrarArchivo,
   comandoCambiarMiembro,
   comandoCompilacion,
   comandoCopiarListado,
@@ -10,9 +12,11 @@ import {
   comandoBorrarTipos,
   comandoCrearArchivoListado,
   comandoCrearTipos,
+  comandoDependencias,
   comandoExisteArchivo,
   comandoListaMiembros,
   rutaMiembro,
+  seBorraAntesDeCrear,
   spoolsDeListado,
 } from '../../../src/core/as400/comandos';
 import { hayErrorGrave, leerListado } from '../../../src/core/as400/listado';
@@ -59,6 +63,7 @@ export function normalizarPeticion(p: PeticionEnvio): PeticionEnvio {
     bibliotecaObjeto: nombre(p.bibliotecaObjeto),
     compilar: p.compilar === true,
     reemplazar: p.reemplazar === true,
+    soloBorrar: p.soloBorrar === true,
     crearArchivoFuente: p.crearArchivoFuente === true,
     bibliotecasExtra: Array.isArray(p.bibliotecasExtra) ? p.bibliotecasExtra.map(nombre) : [],
   };
@@ -119,6 +124,12 @@ export async function ejecutarEnvio(
     pasos.push({ nombre: 'Formato de nombres', ok: !fallo(formato), mensaje: texto(formato) });
     if (fallo(formato)) return terminar(pasos, ruta);
 
+    // Solo borrar: el archivo que se va a crear de nuevo (un lógico se borra antes que su físico).
+    if (p.soloBorrar) {
+      if (seBorraAntesDeCrear(p.tipo)) await borrarSiExiste(sesion, p, pasos);
+      return terminar(pasos, ruta);
+    }
+
     if (p.crearArchivoFuente) {
       const existe = await cl(sesion, comandoExisteArchivo(p.bibliotecaFuente, p.archivoFuente));
       if (fallo(existe)) {
@@ -157,6 +168,11 @@ export async function ejecutarEnvio(
       await cl(sesion, comandoAgregarBiblioteca(biblioteca));
     }
 
+    // CRTPF y CRTLF no tienen REPLACE: si ya existe, se borra antes de crear. Si no se puede, no se compila.
+    if (p.reemplazar && seBorraAntesDeCrear(p.tipo) && !(await borrarSiExiste(sesion, p, pasos))) {
+      return terminar(pasos, ruta);
+    }
+
     // Lo que hay hoy en los spools del listado: si después de compilar siguen iguales, el compilador
     // no dejó listado nuevo y no se muestra el de una compilación anterior.
     const spools = spoolsDeListado(p.tipo, p.miembro);
@@ -191,6 +207,41 @@ export async function ejecutarEnvio(
   } finally {
     sesion.cerrar();
   }
+}
+
+/**
+ * Borra el archivo (PF o LF) si existe. Devuelve false si no se pudo borrar; en ese caso el paso trae
+ * el mensaje y la lista de los archivos que dependen de él (no se borra ninguno).
+ */
+async function borrarSiExiste(sesion: SesionFtp, p: PeticionEnvio, pasos: PasoEnvio[]): Promise<boolean> {
+  const existe = await cl(sesion, comandoExisteArchivo(p.bibliotecaObjeto, p.miembro));
+  if (fallo(existe)) return true;
+  const nombre = `Borrar ${p.bibliotecaObjeto}/${p.miembro}`;
+  const antes = await traerListado(sesion, SPOOL_DEPENDENCIAS);
+  const borrar = await cl(sesion, comandoBorrarArchivo(p));
+  if (!fallo(borrar)) {
+    pasos.push({ nombre, ok: true, mensaje: `${comandoBorrarArchivo(p)}\n${texto(borrar)}` });
+    return true;
+  }
+  let detalle = '';
+  const impreso = await cl(sesion, comandoDependencias(p));
+  if (fallo(impreso)) {
+    detalle = `\nNo se pudo listar los dependientes: ${comandoDependencias(p)}\n${texto(impreso)}`;
+  } else {
+    const lista = await traerListado(sesion, SPOOL_DEPENDENCIAS);
+    detalle =
+      lista !== null && lista !== antes
+        ? `\nArchivos que dependen de ${p.miembro} (DSPDBR); si hay alguno, hay que borrarlo antes:\n${lista}`
+        : `\nNo se pudo traer el listado de dependientes. Ejecuta en el AS400: ${comandoDependencias(p).replace('*PRINT', '*')}`;
+  }
+  pasos.push({
+    nombre,
+    ok: false,
+    mensaje:
+      `${comandoBorrarArchivo(p)}\n${texto(borrar)}\n` +
+      `No se pudo borrar: si el archivo está en uso o tiene dependientes, no se crea de nuevo.${detalle}`,
+  });
+  return false;
 }
 
 /**

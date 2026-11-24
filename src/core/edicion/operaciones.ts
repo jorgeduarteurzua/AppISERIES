@@ -843,6 +843,10 @@ function formatoPie(p: PantallaDSPF, teclas: TeclaFuncion[]): Registro {
 export interface ResultadoTeclasYAyuda {
   pantalla: PantallaDSPF;
   agregados: string[];
+  /** Formatos (AYUDA, PIE) que ya existían y quedan distintos al armarlos de nuevo. */
+  reemplazados: string[];
+  /** F1, F3 o F12 que existen con otro tipo (CA en lugar de CF). No se corrigen solos. */
+  avisos: string[];
 }
 
 /**
@@ -852,6 +856,8 @@ export interface ResultadoTeclasYAyuda {
 export function asegurarTeclasYAyuda(p: PantallaDSPF): ResultadoTeclasYAyuda {
   const n = clonar(p);
   const agregados: string[] = [];
+  const reemplazados: string[] = [];
+  const avisos = teclasBasicasNoCF(p).map((t) => `F${t.numero} esta como ${t.tipo}: debe ser CF.`);
   for (const b of TECLAS_BASICAS) {
     if (!n.teclasFuncion.some((t) => t.numero === b.numero)) {
       n.teclasFuncion.push({ tipo: 'CF', numero: b.numero, respuestaInd: b.numero, texto: b.texto });
@@ -863,6 +869,7 @@ export function asegurarTeclasYAyuda(p: PantallaDSPF): ResultadoTeclasYAyuda {
     const i = n.registros.findIndex((r) => r.nombre.toUpperCase() === nombre);
     if (i >= 0) {
       nuevo.id = n.registros[i].id;
+      if (sinIds(n.registros[i]) !== sinIds(nuevo)) reemplazados.push(nombre);
       n.registros[i] = nuevo;
       agregados.push(`${descripcion} actualizado`);
     } else {
@@ -872,7 +879,17 @@ export function asegurarTeclasYAyuda(p: PantallaDSPF): ResultadoTeclasYAyuda {
   };
   reemplazar(NOMBRE_AYUDA, formatoAyuda(n, teclas), 'formato AYUDA (F1)');
   reemplazar(NOMBRE_PIE, formatoPie(n, teclas), 'pie de teclas PIE');
-  return { pantalla: n, agregados };
+  return { pantalla: n, agregados, reemplazados, avisos };
+}
+
+/** Texto comparable de un registro, sin los ids que se generan de nuevo. */
+function sinIds(r: Registro): string {
+  return JSON.stringify(r, (k, v) => (k === 'id' ? undefined : v));
+}
+
+/** F1, F3 y F12 declaradas con un tipo que no es CF. */
+export function teclasBasicasNoCF(p: PantallaDSPF): TeclaFuncion[] {
+  return p.teclasFuncion.filter((t) => t.tipo !== 'CF' && TECLAS_BASICAS.some((b) => b.numero === t.numero));
 }
 /**
  * El formato que muestra la ayuda de teclas: AYUDA, o (en pantallas del CRUD) el que tiene el campo

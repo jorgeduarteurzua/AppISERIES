@@ -31,6 +31,8 @@ export function DialogoGenerarPrograma({ onCerrar }: { onCerrar: () => void }) {
   const nombreArchivo = useStore((s) => s.nombreArchivoActual);
   const catalogo = useTablas((s) => s.catalogo);
   const biblioteca = useTablas((s) => s.biblioteca);
+  const carpetaPantallas = useStore((s) => s.carpeta);
+  const [busqueda, setBusqueda] = useState<string | null>(null);
   const irA = useNavegacion((s) => s.irA);
 
   const nombrePantalla = useMemo(
@@ -59,6 +61,17 @@ export function DialogoGenerarPrograma({ onCerrar }: { onCerrar: () => void }) {
   }, [pantalla]);
 
   const sql = tipo === 'SQLCBL' || tipo === 'SQLCBLLE';
+  const faltan = archivos.filter((a) => !catalogo[a]);
+
+  /** Los archivos se leen de Tablas: se abre la carpeta de la pantalla (o la que se elija) para encontrarlos. */
+  const buscar = async (propia: boolean) => {
+    setBusqueda(null);
+    const tablas = useTablas.getState();
+    if (propia && carpetaPantallas) await tablas.abrirCarpetaEn(carpetaPantallas);
+    else await tablas.abrirCarpeta();
+    const quedan = archivos.filter((a) => !useTablas.getState().catalogo[a]);
+    setBusqueda(quedan.length === 0 ? 'Archivos encontrados.' : `No se encontró ${quedan.join(', ')} en esa carpeta.`);
+  };
   const resultado = useMemo(() => {
     if (!pantalla) return null;
     try {
@@ -150,6 +163,21 @@ export function DialogoGenerarPrograma({ onCerrar }: { onCerrar: () => void }) {
           ? 'La pantalla no tiene campos de archivos: el programa sale como esqueleto. Use «Campos de un archivo…» para agregarlos.'
           : `Archivos de la pantalla: ${archivos.map((a) => `${a}${catalogo[a] ? '' : ' (no está abierto en Tablas)'}`).join(', ')}.`}
       </p>
+      {(faltan.length > 0 || busqueda) && (
+        <p className="tenue">
+          {faltan.length > 0 && carpetaPantallas && (
+            <button type="button" className="boton-secundario" onClick={() => void buscar(true)}>
+              Buscar en la carpeta de la pantalla
+            </button>
+          )}{' '}
+          {faltan.length > 0 && (
+            <button type="button" className="boton-secundario" onClick={() => void buscar(false)}>
+              Abrir carpeta de archivos…
+            </button>
+          )}{' '}
+          {busqueda}
+        </p>
+      )}
       {resultado?.error && (
         <p className="form-error" role="alert">
           {resultado.error}

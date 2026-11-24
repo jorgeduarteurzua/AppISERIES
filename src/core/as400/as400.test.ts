@@ -112,7 +112,11 @@ describe('comandos', () => {
     const c = (tipo: TipoFuente, extra: Partial<PeticionEnvio> = {}): string =>
       comandoCompilacion(peticion({ tipo, miembro: 'PGM1', archivoFuente: 'QXSRC', ...extra }));
     expect(c('DSPF')).toBe('CRTDSPF FILE(MIOBJ/PGM1) SRCFILE(MIBIB/QXSRC) SRCMBR(PGM1) REPLACE(*YES)');
-    expect(c('PF', { reemplazar: false })).toBe('CRTPF FILE(MIOBJ/PGM1) SRCFILE(MIBIB/QXSRC) SRCMBR(PGM1) REPLACE(*NO)');
+    // CRTPF y CRTLF no tienen REPLACE; el PF se crea sin límite de registros.
+    expect(c('PF')).toBe('CRTPF FILE(MIOBJ/PGM1) SRCFILE(MIBIB/QXSRC) SRCMBR(PGM1) SIZE(*NOMAX)');
+    expect(c('PF', { reemplazar: false })).toBe(c('PF'));
+    expect(c('LF')).toBe('CRTLF FILE(MIOBJ/PGM1) SRCFILE(MIBIB/QXSRC) SRCMBR(PGM1)');
+    expect(c('LF')).not.toContain('REPLACE');
     expect(c('LF')).toMatch(/^CRTLF FILE\(MIOBJ\/PGM1\)/);
     expect(c('SQL')).toBe('RUNSQLSTM SRCFILE(MIBIB/QXSRC) SRCMBR(PGM1) COMMIT(*NONE) DFTRDBCOL(MIOBJ)');
     expect(c('CBL')).toMatch(/^CRTCBLPGM PGM\(MIOBJ\/PGM1\)/);

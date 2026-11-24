@@ -34,6 +34,31 @@ export function comandoAgregarBiblioteca(biblioteca: string): string {
   return `ADDLIBLE LIB(${biblioteca})`;
 }
 
+/**
+ * CRTPF y CRTLF no tienen el parámetro REPLACE: para reemplazar un archivo físico o lógico hay que
+ * borrarlo (DLTF) y crearlo de nuevo.
+ */
+export function seBorraAntesDeCrear(tipo: TipoFuente): boolean {
+  return tipo === 'PF' || tipo === 'LF';
+}
+
+/** Borra el archivo (PF o LF) que se va a crear de nuevo. */
+export function comandoBorrarArchivo(p: PeticionEnvio): string {
+  return `DLTF FILE(${p.bibliotecaObjeto}/${p.miembro})`;
+}
+
+/** Archivos que dependen de uno (lógicos, vistas, índices): sale en un spool con este nombre. */
+export function comandoDependencias(p: PeticionEnvio): string {
+  return `DSPDBR FILE(${p.bibliotecaObjeto}/${p.miembro}) OUTPUT(*PRINT)`;
+}
+export const SPOOL_DEPENDENCIAS = 'QPDSPDBR';
+
+/** Comandos que se ejecutan para compilar, en orden (para mostrarlos). */
+export function comandosCompilacion(p: PeticionEnvio): string[] {
+  const crear = comandoCompilacion(p);
+  return seBorraAntesDeCrear(p.tipo) && p.reemplazar ? [`${comandoBorrarArchivo(p)}  (si ya existe)`, crear] : [crear];
+}
+
 /** Comando de compilación. Los programas SQL siempre usan COMMIT(*NONE). */
 export function comandoCompilacion(p: PeticionEnvio): string {
   const fuente = `SRCFILE(${p.bibliotecaFuente}/${p.archivoFuente}) SRCMBR(${p.miembro})`;
@@ -43,9 +68,9 @@ export function comandoCompilacion(p: PeticionEnvio): string {
     case 'DSPF':
       return `CRTDSPF FILE(${objeto}) ${fuente} ${reemplazo}`;
     case 'PF':
-      return `CRTPF FILE(${objeto}) ${fuente} ${reemplazo}`;
+      return `CRTPF FILE(${objeto}) ${fuente} SIZE(*NOMAX)`;
     case 'LF':
-      return `CRTLF FILE(${objeto}) ${fuente} ${reemplazo}`;
+      return `CRTLF FILE(${objeto}) ${fuente}`;
     case 'SQL':
       return `RUNSQLSTM ${fuente} COMMIT(*NONE) DFTRDBCOL(${p.bibliotecaObjeto})`;
     case 'CBL':

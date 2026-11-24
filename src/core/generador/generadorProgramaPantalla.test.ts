@@ -275,3 +275,32 @@ describe('programa desde una pantalla: F1, F3 y F12', () => {
     expect(generarProgramaPantalla(sinAyuda, opciones('CBL')).advertencias.join(' ')).toMatch(/F1 pero no el formato AYUDA/);
   });
 });
+
+describe('programa desde una pantalla: pie con formatos de ventana', () => {
+  const DDS_VENTANA =
+    DDS +
+    [
+      '     A          R W01                       WINDOW(4 10 8 40)',
+      '     A            DATO          10A  B  3  2',
+      '     A          R PW01                      WINDOW(W01)',
+      '     A                                      OVERLAY',
+      "     A                                  6  2'F12=Volver'",
+    ].join('\n') +
+    '\n';
+  const { cobol } = generarProgramaPantalla(parsearDspf(DDS_VENTANA, 'CLIENTED'), opciones('CBL'));
+
+  it('el pie de pantalla completa se escribe antes de una ventana, y el de la ventana después de ella', () => {
+    const mostrar = parrafo(cobol, 'MOSTRAR-W01');
+    const pie = mostrar.indexOf('PERFORM ESCRIBIR-P01');
+    const ventana = mostrar.indexOf('FORMAT "W01"');
+    const pieVentana = mostrar.indexOf('PERFORM ESCRIBIR-PW01');
+    expect(pie).toBeGreaterThan(-1);
+    expect(pie).toBeLessThan(ventana);
+    expect(pieVentana).toBeGreaterThan(ventana);
+  });
+  it('en un formato de pantalla completa el pie va después y el de la ventana no se escribe', () => {
+    const mostrar = parrafo(cobol, 'MOSTRAR-R01');
+    expect(mostrar.indexOf('PERFORM ESCRIBIR-P01')).toBeGreaterThan(mostrar.indexOf('FORMAT "R01"'));
+    expect(mostrar).not.toContain('ESCRIBIR-PW01');
+  });
+});

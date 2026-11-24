@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { crearPantalla } from '@core/edicion/operaciones';
 import { generarDspf } from '@core/generador/generadorDspf';
 import { parsearTabla } from '@core/tablas/parserTabla';
@@ -71,6 +71,84 @@ describe('Pantallas: campos de un archivo y programa', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generar programa…' }));
     expect(screen.getByText(/el programa sale como esqueleto/)).toBeTruthy();
     expect(screen.getByLabelText('Programa generado').textContent).toContain('MOSTRAR-REG01');
+  });
+});
+
+describe('Pantallas: Teclas y ayuda', () => {
+  it('agrega F1, F3 y F12, AYUDA y PIE; al repetir con una tecla nueva la lista en ambos', () => {
+    useStore.setState({ modoEdicion: true });
+    render(<SeccionPantallas />);
+    fireEvent.click(screen.getByRole('button', { name: 'Teclas y ayuda' }));
+    let dds = generarDspf(useStore.getState().pantalla!);
+    for (const n of ['01', '03', '12']) expect(dds).toContain(`CF${n}(${n}`);
+    expect(dds).toMatch(/R AYUDA +WINDOW\(/);
+    expect(dds).toMatch(/R PIE +OVERLAY/);
+    expect(useStore.getState().modificado).toBe(true);
+
+    const p = useStore.getState().pantalla!;
+    act(() => useStore.getState().aplicar({ ...p, teclasFuncion: [...p.teclasFuncion, { tipo: 'CF', numero: 5, respuestaInd: 5, texto: 'Renovar' }] }));
+    fireEvent.click(screen.getByRole('button', { name: 'Teclas y ayuda' }));
+    dds = generarDspf(useStore.getState().pantalla!);
+    expect(dds.match(/F5=Renovar/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(dds).toContain('F5=Renovar');
+    expect(dds.match(/R AYUDA/g)).toHaveLength(1);
+    expect(dds.match(/R PIE/g)).toHaveLength(1);
+  });
+});
+
+describe('Pantallas: generar programa sin el archivo abierto en Tablas', () => {
+  it('ofrece buscar el archivo en la carpeta de la pantalla y lo usa en el programa', async () => {
+    const { parsearDspf } = await import('@core/parser/parserDspf');
+    const p = parsearDspf(
+      [
+        '     A                                      INDARA',
+        '     A          R REG01',
+        '     A            RUT       R        B  4 20REFFLD(RUT CLIENTES)',
+        '     A            NOMBRE    R        B  5 20REFFLD(NOMBRE CLIENTES)',
+      ].join('\n') + '\n',
+      'CLIENTED',
+    );
+    const api = window.api as unknown as Record<string, unknown>;
+    api.listarCarpeta = vi.fn().mockResolvedValue([{ nombre: 'CLIENTES.pf', ruta: 'C:/f/CLIENTES.pf' }]);
+    api.leerFuente = vi.fn().mockResolvedValue(
+      ['     A                                      UNIQUE', '     A          R RCLIENTE', '     A            RUT            9S 0', '     A            NOMBRE        40A', '     A          K RUT'].join('\n') + '\n',
+    );
+    useTablas.setState({ catalogo: {} });
+    useStore.setState({ pantalla: p, carpeta: 'C:/f', registroSeleccionado: p.registros[0].id });
+    render(<SeccionPantallas />);
+    fireEvent.click(screen.getByRole('button', { name: 'Generar programa…' }));
+    const generar = screen.getByRole('dialog', { name: 'Generar programa' });
+    expect(within(generar).getByText(/CLIENTES \(no está abierto en Tablas\)/)).toBeTruthy();
+    expect(within(generar).getByLabelText('Programa generado').textContent).not.toContain('SELECT CLIENTES');
+
+    fireEvent.click(within(generar).getByRole('button', { name: 'Buscar en la carpeta de la pantalla' }));
+    expect(await within(generar).findByText('Archivos encontrados.')).toBeTruthy();
+    expect(within(generar).queryByText(/no está abierto en Tablas/)).toBeNull();
+    expect(within(generar).getByLabelText('Programa generado').textContent).toContain('SELECT CLIENTES');
+  });
+});
+
+describe('Pantallas: Teclas y ayuda con un AYUDA propio', () => {
+  it('pide confirmacion antes de reemplazarlo y no cambia nada si se rechaza', () => {
+    useStore.setState({ modoEdicion: true });
+    render(<SeccionPantallas />);
+    fireEvent.click(screen.getByRole('button', { name: 'Teclas y ayuda' }));
+    const p = useStore.getState().pantalla!;
+    const propia = structuredClone(p);
+    const ayuda = propia.registros.find((r) => r.nombre === 'AYUDA')!;
+    ayuda.elementos = ayuda.elementos.filter((e) => !(e.tipo === 'constante' && e.texto === 'F3=Salir'));
+    act(() => useStore.getState().aplicar(propia));
+    const antes = generarDspf(useStore.getState().pantalla!);
+
+    const confirmar = vi.fn(() => false);
+    window.confirm = confirmar;
+    fireEvent.click(screen.getByRole('button', { name: 'Teclas y ayuda' }));
+    expect(confirmar).toHaveBeenCalledTimes(1);
+    expect(generarDspf(useStore.getState().pantalla!)).toBe(antes);
+
+    window.confirm = () => true;
+    fireEvent.click(screen.getByRole('button', { name: 'Teclas y ayuda' }));
+    expect(generarDspf(useStore.getState().pantalla!)).toContain('F3=Salir');
   });
 });
 

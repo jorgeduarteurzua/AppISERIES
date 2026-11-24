@@ -51,8 +51,10 @@ export function SeccionPantallas() {
   const teclasYAyuda = () => {
     if (!pantalla) return;
     const r = asegurarTeclasYAyuda(pantalla);
+    if (r.reemplazados.length > 0 && !window.confirm(`Ya existe ${r.reemplazados.join(' y ')} y quedaria distinto: se reemplaza por uno armado con las teclas de la pantalla. ¿Continuar?`)) return;
     useStore.getState().aplicar(r.pantalla);
-    useGuardado.setState({ mensaje: `Teclas y ayuda: ${r.agregados.join(', ')}.`, tipo: 'ok' });
+    const avisos = r.avisos.length > 0 ? ` Aviso: ${r.avisos.join(' ')}` : '';
+    useGuardado.setState({ mensaje: `Teclas y ayuda: ${r.agregados.join(', ')}.${avisos}`, tipo: 'ok' });
   };
 
   const registro = registroDe(pantalla, registroSeleccionado);
