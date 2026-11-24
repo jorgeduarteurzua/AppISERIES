@@ -47,6 +47,7 @@ export function FormularioNuevoRegistro({
   const [nombre, setNombre] = useState(() => nombreSugerido(pantalla, 'normal'));
   const [control, setControl] = useState(() => parSubfileLibre(pantalla).ctl);
   const [titulo, setTitulo] = useState('');
+  const [completo, setCompleto] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const esSubfile = tipo === 'subfile' || tipo === 'subfile-ventana';
@@ -68,6 +69,7 @@ export function FormularioNuevoRegistro({
           nombre: normalizarNombre(nombre),
           nombreControl: normalizarNombre(control),
           ventana,
+          completo,
           tituloArriba: titulo || undefined,
         }
       : {
@@ -121,6 +123,12 @@ export function FormularioNuevoRegistro({
             value={control}
             onChange={(e) => setControl(e.target.value)}
           />
+        </label>
+      )}
+      {esSubfile && (
+        <label className="form-fila form-check" title="OVERLAY, registro relativo del cursor (SFLCSRRRN), página donde quedó (SFLRCDNBR), campo de opción y la línea 2=Modificar 4=Eliminar 5=Consultar">
+          <input type="checkbox" checked={completo} onChange={(e) => setCompleto(e.target.checked)} />
+          <span>Como el CRUD: opción, registro relativo y OVERLAY</span>
         </label>
       )}
       {conVentana && (

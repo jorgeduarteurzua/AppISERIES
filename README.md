@@ -264,6 +264,11 @@ Pantallas: **Enviar pantalla…**. Tablas: **Enviar archivo…** (DDS y SQL opci
   - **Subfiles:** `CARGAR-<sfl>` usa los indicadores de SFLCLR, SFLDSP, SFLDSPCTL y SFLEND del control, y respeta el SFLSIZ. `PROCESAR-<sfl>` lee las filas modificadas.
   - **Datos:** para los campos con REFFLD, en un formato normal se genera `LEER-<archivo>-<formato>` por la llave del archivo (si la pantalla tiene como entrada todos sus campos), más `AGREGAR-` y `MODIFICAR-`. En un subfile, la carga lee los registros del archivo. Con E/S nativa se usa `SELECT … ASSIGN TO DATABASE-…`, `COPY DDS-ALL-FORMATS`, `READ`, `START`, `WRITE` y `REWRITE`. Con SQL se usan variables de trabajo con la definición del archivo, `SELECT INTO`, un cursor, `INSERT` y `UPDATE`.
   - **Avisos:** si un archivo no está abierto en Tablas, si la pantalla no tiene INDARA, o si un formato no tiene la llave como entrada.
+- **Subfiles como los del CRUD:** al crear un subfile con «+ Registro» (opción «Como el CRUD», marcada por defecto), el control lleva `OVERLAY`, `SFLCSRRRN(&REGREL)` con el oculto `REGREL 5S 0H` (registro relativo del cursor) y `POSCUR 4S 0H` con `SFLRCDNBR(CURSOR)` (la página donde quedó). El subfile lleva `OPCION 1A B` en la columna 2, el encabezado «Opc» y la línea «Opciones: 2=Modificar 4=Eliminar 5=Consultar», que se puede cambiar. En una pantalla que ya existe, **Completar subfile** (en la barra de edición) agrega lo que falte. No mueve nada: si no hay lugar, lo avisa.
+- **Llave oculta:** al incorporar campos de un archivo en un subfile, los campos de la llave se agregan como ocultos (`HK01`, `HK02`…, con `REFFLD`). Así el programa sabe a qué registro corresponde la fila elegida.
+- **Barra de desplazamiento:** con `SFLEND(*SCRBAR)`, el editor marca como error el campo del subfile que llegue al borde derecho. A pantalla completa debe terminar en la columna 77 o antes; en una ventana, 2 columnas antes del borde. Si no, el compilador da CPD8186 y, por arrastre, CPD5238. Solo se avisa (también al incorporar campos): no se acomoda nada.
+- **Campos ocultos:** «+ Campo oculto» agrega un campo sin posición. Debajo del lienzo, «Campos sin posición» lista los ocultos (H) y de programa (P) del formato; un clic los selecciona para editarlos o borrarlos.
+- **Programa con opciones:** si el subfile tiene `OPCION` y la llave oculta, `PROCESAR-<sfl>` evalúa la opción de cada fila elegida. La 2 y la 5 llevan la llave al formato de detalle, lo leen con `LEER-` y lo muestran. La 4 elimina (`DELETE` nativo o de SQL). Al terminar se vuelve a cargar el subfile y se queda en la página donde estaba el cursor (`REGREL` y `POSCUR`). Con SQL, la llave visible y oculta no repite columnas.
 
 ## Programas (COBOL y CL)
 
@@ -363,3 +368,12 @@ QDSPSRC/             Fuentes DDS de ejemplo (32 pantallas reales)
 
 - La lista (subfile) carga como máximo 500 registros (`SFLSIZ(0500)`). Si hay más, el programa avisa y se usa Posicionar para ver los demás.
 - En pantallas Window la última línea de la ventana queda libre para mensajes (`*MSGLIN`) y el borde (fila + alto + 1, columna + ancho + 3) debe caber en la pantalla; la validación avisa si no.
+
+## Teclas F1, F3, F12, AYUDA y PIE
+
+- Toda pantalla nueva sale con F1, F3 y F12 declaradas como CF, un formato `AYUDA` (ventana con las teclas, se muestra con F1) y un formato `PIE` (OVERLAY con el pie de teclas).
+- El botón «Teclas y ayuda» agrega lo que falte y vuelve a armar AYUDA y PIE con las teclas actuales.
+- La validación avisa si falta F1, F3 o F12, si F1 no tiene formato AYUDA o si AYUDA no lista todas las teclas.
+- Con `SFLEND(*SCRBAR)` un campo del subfile no puede empezar en la columna 1 (su byte de atributo cae sobre la barra, CPD8186) ni terminar sobre ella. Solo se avisa; los campos no se mueven solos.
+- El generador de programas mapea F1 a `MUESTRA-AYUDA`, F3 a la salida del programa y F12 a volver al formato anterior. Los formatos solo de escritura (PIE) se escriben junto con cada formato.
+- Nada de lo generado se ha compilado en el IBM i.

@@ -10,6 +10,8 @@ import { definicionDe } from '../tablas/generadorSql';
 import { camposDe, llavesDe, nombreArchivoTabla, parametroDe, tipoDeTabla } from '../tablas/modelo';
 import type { CampoTabla, Tabla } from '../tablas/modelo';
 import { encabezadosDe, textoDe } from '../tablas/operacionesTabla';
+import { dimensionElemento, marcoDe } from '../render/geometria';
+import { ultimaColumnaConBarra } from './validacion';
 
 export type ResolverArchivo = (nombre: string) => Tabla | null;
 
@@ -87,6 +89,11 @@ export interface OpcionesIncorporar {
   /** Posición de la primera etiqueta (o del primer campo, sin etiquetas). */
   fila: number;
   columna: number;
+  /**
+   * En un subfile: agrega como ocultos (HKnn, con REFFLD) los campos de la llave del archivo, para
+   * saber a qué registro corresponde la fila elegida. Por defecto sí.
+   */
+  llavesOcultas?: boolean;
 }
 
 /** Tipo de dato con que el campo se ve en la pantalla. Los numéricos de la base se ven como zoned. */
@@ -104,7 +111,10 @@ function textoEtiqueta(c: CampoDeArchivo, modo: EtiquetaCampo): string {
 const kw = (nombre: string, parametros = ''): Keyword => ({ nombre, parametros, indicadores: [] });
 
 /** Agrega los campos al formato. Lanza un Error con el motivo si no se puede. */
-export function incorporarCampos(p: PantallaDSPF, op: OpcionesIncorporar): { pantalla: PantallaDSPF; agregados: string[] } {
+export function incorporarCampos(
+  p: PantallaDSPF,
+  op: OpcionesIncorporar,
+): { pantalla: PantallaDSPF; agregados: string[]; avisos: string[] } {
   const registro = p.registros.find((r) => r.id === op.regId);
   if (!registro) throw new Error('El formato elegido no existe.');
   if (op.campos.length === 0) throw new Error('Elija al menos un campo.');
@@ -161,7 +171,56 @@ export function incorporarCampos(p: PantallaDSPF, op: OpcionesIncorporar): { pan
     destino.elementos.push(campo);
     agregados.push(c.nombre);
   });
-  return { pantalla: nueva, agregados };
+
+  // Subfile: la llave del archivo como campos ocultos (HK01, HK02...), como en el CRUD.
+  if (destino.clase === 'subfile' && op.llavesOcultas !== false) {
+    const usados = new Set(destino.elementos.flatMap((e) => (e.tipo === 'campo' ? [e.nombre.toUpperCase()] : [])));
+    const yaOculta = (campo: string) =>
+      destino.elementos.some((e) => e.tipo === 'campo' && e.uso === 'oculto' && archivoDeReferencia(e)?.campo === campo && archivoDeReferencia(e)?.archivo === archivo);
+    let n = 1;
+    for (const k of [...disponibles.values()].filter((x) => x.llave)) {
+      if (yaOculta(k.nombre)) continue;
+      while (usados.has(`HK${String(n).padStart(2, '0')}`)) n++;
+      const nombre = `HK${String(n).padStart(2, '0')}`;
+      usados.add(nombre);
+      const tipo = tipoPantalla(k.tipo);
+      const fecha = tipo === 'L' || tipo === 'T' || tipo === 'Z';
+      destino.elementos.push({
+        tipo: 'campo',
+        id: nuevoId('campo'),
+        nombre,
+        longitud: fecha ? (tipo === 'L' ? 10 : tipo === 'T' ? 8 : 26) : k.longitud,
+        decimales: tipo === 'S' ? k.decimales : 0,
+        tipoDato: tipo,
+        uso: 'oculto',
+        fila: null,
+        columna: null,
+        keywords: [kw('REFFLD', `${k.nombre} ${archivo}`)],
+        indicadores: [],
+        referencia: true,
+        heredada: fecha,
+      });
+      agregados.push(`${nombre} (llave ${k.nombre}, oculto)`);
+    }
+  }
+
+  // Con SFLEND(*SCRBAR) se avisa (no se acomoda) si algún campo llega a la barra de desplazamiento.
+  const avisos: string[] = [];
+  if (destino.clase === 'subfile') {
+    const control = nueva.registros.find((r) => r.clase === 'control-subfile' && r.subfileControlado === destino.nombre);
+    if (control?.keywords.some((k) => k.nombre === 'SFLEND' && /\*SCRBAR/i.test(k.parametros))) {
+      const marco = marcoDe(nueva, destino);
+      const limite = ultimaColumnaConBarra(marco);
+      for (const e of destino.elementos) {
+        if (e.fila === null || e.columna === null || !agregados.includes(e.tipo === 'campo' ? e.nombre : '')) continue;
+        const fin = e.columna + dimensionElemento(e, marco).ancho - 1;
+        if (fin > limite) {
+          avisos.push(`${e.tipo === 'campo' ? e.nombre : 'Un texto'} termina en la columna ${fin}: con SFLEND(*SCRBAR) debe terminar en la ${limite} o antes (CPD8186).`);
+        }
+      }
+    }
+  }
+  return { pantalla: nueva, agregados, avisos };
 }
 
 /** De qué archivo viene un campo de pantalla (su REFFLD), o null. */

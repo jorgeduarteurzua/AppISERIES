@@ -139,6 +139,11 @@ export type OpcionesRegistro =
       paginaSubfile?: number;
       tituloArriba?: string;
       tituloAbajo?: string;
+      /**
+       * Como el subfile del CRUD (por defecto): OVERLAY, el registro relativo del cursor (SFLCSRRRN),
+       * la página donde quedó (SFLRCDNBR), el campo de opción y las opciones 2, 4 y 5.
+       */
+      completo?: boolean;
     };
 
 function keywordsVentana(v: VentanaDef): Keyword[] {
@@ -193,6 +198,9 @@ export function agregarRegistro(
   const pagina = opciones.paginaSubfile ?? 10;
   const ancho = opciones.ventana ? opciones.ventana.ancho : n.tamano.columnas;
   const filaDetalle = 5;
+  const completo = opciones.completo !== false;
+  // Con el campo de opción en la columna 2, el detalle empieza en la 5.
+  const columnaDetalle = completo ? 5 : 2;
 
   // Registro SFL: una línea de detalle de salida.
   const sfl = registroVacio(nombre, [kw('SFL')]);
@@ -200,10 +208,10 @@ export function agregarRegistro(
   sfl.elementos.push(
     crearCampo({
       nombre: 'DETSFL',
-      longitud: Math.max(1, Math.min(60, ancho - 2)),
+      longitud: Math.max(1, Math.min(60, ancho - columnaDetalle - (opciones.ventana ? 1 : 2))),
       uso: 'salida',
       fila: filaDetalle,
-      columna: 2,
+      columna: columnaDetalle,
     }),
   );
 
@@ -228,13 +236,14 @@ export function agregarRegistro(
     tipo: 'constante',
     id: nuevoId('cte'),
     fila: filaDetalle - 1,
-    columna: 2,
+    columna: columnaDetalle,
     texto: 'Descripción',
     keywords: [kw('DSPATR', 'HI')],
     indicadores: [],
   });
 
   n.registros.push(sfl, ctl);
+  if (completo) return { pantalla: completarSubfile(n, ctl.id).pantalla, registroId: ctl.id };
   return { pantalla: n, registroId: ctl.id };
 }
 
@@ -652,4 +661,227 @@ export function actualizarTecla(
     t.texto = parche.texto === '' ? undefined : parche.texto.replace(/'/g, "''");
   }
   return n;
+}
+
+/** Opciones del subfile, como en el CRUD. */
+export const TEXTO_OPCIONES_SUBFILE = 'Opciones: 2=Modificar   4=Eliminar   5=Consultar';
+
+export interface ResultadoCompletarSubfile {
+  pantalla: PantallaDSPF;
+  /** Lo que se agregó, para mostrarlo. */
+  agregados: string[];
+  /** Lo que no se pudo agregar y hay que hacer a mano. */
+  avisos: string[];
+}
+
+const esOpcion = (e: Elemento): boolean =>
+  e.tipo === 'campo' && /^OPC(ION)?$/i.test(e.nombre) && (e.uso === 'entrada' || e.uso === 'ambos');
+
+/**
+ * Agrega a un subfile lo que tiene el del CRUD y le falte: OVERLAY en el control, el registro
+ * relativo del cursor (REGREL con SFLCSRRRN), la página donde quedó (POSCUR con SFLRCDNBR(CURSOR)),
+ * el campo OPCION al inicio de la línea, su encabezado y la línea de opciones. Lo que no cabe se
+ * avisa (no se mueve nada de lo que ya está).
+ */
+export function completarSubfile(p: PantallaDSPF, regId: string): ResultadoCompletarSubfile {
+  const elegido = buscarRegistro(p, regId);
+  const n = clonar(p);
+  const ctl =
+    elegido.clase === 'control-subfile'
+      ? buscarRegistro(n, regId)
+      : n.registros.find((r) => r.clase === 'control-subfile' && r.subfileControlado === elegido.nombre);
+  if (!ctl || ctl.clase !== 'control-subfile') throw new Error('Elija un subfile o su control.');
+  const sfl = n.registros.find((r) => r.clase === 'subfile' && r.nombre === ctl.subfileControlado);
+  if (!sfl) throw new Error(`El subfile ${ctl.subfileControlado ?? ''} no está en la pantalla.`);
+  const agregados: string[] = [];
+  const avisos: string[] = [];
+  const nombres = (r: Registro) => r.elementos.flatMap((e) => (e.tipo === 'campo' ? [e.nombre] : []));
+  const tiene = (r: Registro, k: string) => r.keywords.some((x) => x.nombre === k);
+  // Las keywords nuevas van después de SFLPAG, como en el CRUD.
+  const insertarKeyword = (k: Keyword) => {
+    const i = ctl.keywords.findIndex((x) => x.nombre === 'SFLPAG');
+    ctl.keywords.splice(i >= 0 ? i + 1 : ctl.keywords.length, 0, k);
+  };
+  const ocultos: Campo[] = [];
+
+  if (!ctl.elementos.some((e) => e.tipo === 'campo' && e.keywords.some((k) => k.nombre === 'SFLRCDNBR'))) {
+    const nombre = nombreLibre(nombres(ctl), 'POSCUR');
+    const c = crearCampo({ nombre: nombres(ctl).includes('POSCUR') ? nombre : 'POSCUR', longitud: 4, tipoDato: 'S', uso: 'oculto', fila: null, columna: null });
+    c.keywords.push(kw('SFLRCDNBR', 'CURSOR'));
+    ocultos.push(c);
+    agregados.push(`${c.nombre} con SFLRCDNBR(CURSOR) (vuelve a la página donde quedó)`);
+  }
+  if (!tiene(ctl, 'SFLCSRRRN')) {
+    const nombre = nombres(ctl).includes('REGREL') ? nombreLibre(nombres(ctl), 'REGREL') : 'REGREL';
+    ocultos.push(crearCampo({ nombre, longitud: 5, tipoDato: 'S', uso: 'oculto', fila: null, columna: null }));
+    insertarKeyword(kw('SFLCSRRRN', `&${nombre}`));
+    agregados.push(`${nombre} con SFLCSRRRN (registro relativo del cursor)`);
+  }
+  if (!tiene(ctl, 'OVERLAY')) {
+    insertarKeyword(kw('OVERLAY'));
+    agregados.push('OVERLAY en el control');
+  }
+  // Los campos ocultos van primero en el control, como en el CRUD.
+  ctl.elementos.unshift(...ocultos);
+
+  // Campo de opción en la columna 2 de la primera línea del subfile.
+  const filas = sfl.elementos.flatMap((e) => (e.fila !== null ? [e.fila] : []));
+  const primera = filas.length > 0 ? Math.min(...filas) : null;
+  if (!sfl.elementos.some(esOpcion)) {
+    if (primera === null) {
+      avisos.push(`${sfl.nombre} no tiene campos ubicados: agregue el campo OPCION a mano.`);
+    } else if (sfl.elementos.some((e) => e.fila === primera && e.columna !== null && e.columna <= 4)) {
+      avisos.push(`En ${sfl.nombre} no hay lugar para OPCION en las columnas 2 a 4 de la fila ${primera}: hágale espacio y vuelva a completar.`);
+    } else {
+      const c = crearCampo({ nombre: 'OPCION', longitud: 1, tipoDato: 'A', uso: 'ambos', fila: primera, columna: 2 });
+      sfl.elementos.unshift(c);
+      agregados.push(`OPCION en ${sfl.nombre} (fila ${primera}, columna 2)`);
+      // Encabezado «Opc» en la fila de arriba, si está libre al inicio.
+      const filaTitulo = primera - 1;
+      if (filaTitulo >= 1 && !ctl.elementos.some((e) => e.fila === filaTitulo && e.columna !== null && e.columna <= 4)) {
+        ctl.elementos.push({ tipo: 'constante', id: nuevoId('cte'), fila: filaTitulo, columna: 2, texto: 'Opc', keywords: [kw('DSPATR', 'HI')], indicadores: [] });
+      }
+    }
+  }
+  // Línea de opciones, dos filas arriba del subfile, si esa fila del control está libre.
+  const yaHayOpciones = ctl.elementos.some((e) => e.tipo === 'constante' && /\b\d=/.test(e.texto));
+  if (!yaHayOpciones && primera !== null) {
+    const fila = primera - 2;
+    if (fila >= 1 && !ctl.elementos.some((e) => e.fila === fila)) {
+      ctl.elementos.push({ tipo: 'constante', id: nuevoId('cte'), fila, columna: 2, texto: TEXTO_OPCIONES_SUBFILE, keywords: [], indicadores: [] });
+      agregados.push(`la línea de opciones en la fila ${fila}`);
+    } else {
+      avisos.push(`No se agregó la línea de opciones (2=Modificar 4=Eliminar 5=Consultar): la fila ${Math.max(1, fila)} del control no está libre.`);
+    }
+  }
+  return { pantalla: n, agregados, avisos };
+}
+// ---------------------------------------------------------------------------
+// Teclas básicas (F1, F3, F12), ayuda de teclas y pie
+// ---------------------------------------------------------------------------
+
+/** Formato con la ayuda de teclas (F1) y formato con el pie de teclas. */
+export const NOMBRE_AYUDA = 'AYUDA';
+export const NOMBRE_PIE = 'PIE';
+
+/** Teclas que toda pantalla debe tener: F1 muestra la ayuda, F3 sale del programa y F12 vuelve. */
+export const TECLAS_BASICAS: ReadonlyArray<{ numero: number; texto: string }> = [
+  { numero: 1, texto: 'Ayuda' },
+  { numero: 3, texto: 'Salir' },
+  { numero: 12, texto: 'Volver' },
+];
+
+/** «F3=Salir»: como se ve una tecla en la ayuda y en el pie. */
+export function textoDeTecla(t: TeclaFuncion): string {
+  const texto = textoLegibleTecla(t).trim() || TECLAS_BASICAS.find((b) => b.numero === t.numero)?.texto || 'Tecla';
+  return `F${t.numero}=${texto}`;
+}
+
+/** Ayuda de teclas en una ventana: una línea por tecla (en dos columnas si son muchas) y PAUSA. */
+function formatoAyuda(p: PantallaDSPF, teclas: TeclaFuncion[]): Registro {
+  const textos = teclas.map(textoDeTecla);
+  const maxFilasTeclas = Math.max(1, p.tamano.filas - 9);
+  const dosColumnas = textos.length > maxFilasTeclas;
+  const filasTeclas = dosColumnas ? Math.ceil(textos.length / 2) : textos.length;
+  const anchoTexto = Math.max(...textos.map((x) => x.length), 1);
+  const segundaColumna = 2 + anchoTexto + 3;
+  const pie = 'Presione Enter para volver';
+  const ancho = Math.min(p.tamano.columnas - 6, Math.max(34, pie.length + 6, dosColumnas ? segundaColumna + anchoTexto + 2 : anchoTexto + 4));
+  // Título en la fila 1, teclas desde la 3, el aviso después de una fila libre y la línea de mensajes al final.
+  const filaPie = 3 + filasTeclas + 1;
+  const alto = filaPie + 1;
+  const fila = Math.max(2, Math.floor((p.tamano.filas - alto - 2) / 2));
+  const columna = Math.max(2, Math.floor((p.tamano.columnas - ancho - 4) / 2));
+  const reg = registroVacio(NOMBRE_AYUDA, keywordsVentana({ fila, columna, alto, ancho }));
+  ponerTitulo(reg, 'arriba', 'Ayuda');
+  const cte = (f: number, c: number, texto: string, keywords: Keyword[] = []): Constante => ({
+    tipo: 'constante',
+    id: nuevoId('cte'),
+    fila: f,
+    columna: c,
+    texto,
+    keywords,
+    indicadores: [],
+  });
+  reg.elementos.push(cte(1, 2, 'Teclas de funcion', [kw('DSPATR', 'HI')]));
+  textos.forEach((x, i) => {
+    const enSegunda = dosColumnas && i >= filasTeclas;
+    reg.elementos.push(cte(3 + (enSegunda ? i - filasTeclas : i), enSegunda ? segundaColumna : 2, x));
+  });
+  reg.elementos.push(cte(filaPie, 2, pie));
+  const pausa = crearCampo({ nombre: 'PAUSA', longitud: 1, uso: 'ambos', fila: filaPie, columna: pie.length + 4 });
+  pausa.keywords.push(kw('DSPATR', 'ND'));
+  reg.elementos.push(pausa);
+  return reg;
+}
+
+/** Pie de teclas (OVERLAY), en las últimas filas antes de la de mensajes. */
+function formatoPie(p: PantallaDSPF, teclas: TeclaFuncion[]): Registro {
+  const ancho = p.tamano.columnas - 3;
+  const lineas: string[] = [];
+  for (const x of teclas.map(textoDeTecla)) {
+    const ultima = lineas[lineas.length - 1];
+    if (ultima !== undefined && ultima.length + 2 + x.length <= ancho) lineas[lineas.length - 1] = `${ultima}  ${x}`;
+    else lineas.push(x);
+  }
+  const reg = registroVacio(NOMBRE_PIE, [kw('OVERLAY')]);
+  const ultimaFila = p.tamano.filas - 1;
+  lineas.forEach((l, i) => {
+    reg.elementos.push({
+      tipo: 'constante',
+      id: nuevoId('cte'),
+      fila: ultimaFila - (lineas.length - 1) + i,
+      columna: 2,
+      texto: l,
+      keywords: [kw('COLOR', 'BLU')],
+      indicadores: [],
+    });
+  });
+  return reg;
+}
+
+export interface ResultadoTeclasYAyuda {
+  pantalla: PantallaDSPF;
+  agregados: string[];
+}
+
+/**
+ * Deja la pantalla con F1, F3 y F12 (CF) y arma de nuevo, con las teclas que tenga, el formato
+ * AYUDA (lo que muestra F1) y el pie de teclas PIE. Se puede repetir después de cambiar las teclas.
+ */
+export function asegurarTeclasYAyuda(p: PantallaDSPF): ResultadoTeclasYAyuda {
+  const n = clonar(p);
+  const agregados: string[] = [];
+  for (const b of TECLAS_BASICAS) {
+    if (!n.teclasFuncion.some((t) => t.numero === b.numero)) {
+      n.teclasFuncion.push({ tipo: 'CF', numero: b.numero, respuestaInd: b.numero, texto: b.texto });
+      agregados.push(`CF${String(b.numero).padStart(2, '0')} (${b.texto})`);
+    }
+  }
+  const teclas = [...n.teclasFuncion].sort((a, b) => a.numero - b.numero);
+  const reemplazar = (nombre: string, nuevo: Registro, descripcion: string) => {
+    const i = n.registros.findIndex((r) => r.nombre.toUpperCase() === nombre);
+    if (i >= 0) {
+      nuevo.id = n.registros[i].id;
+      n.registros[i] = nuevo;
+      agregados.push(`${descripcion} actualizado`);
+    } else {
+      n.registros.push(nuevo);
+      agregados.push(`${descripcion} agregado`);
+    }
+  };
+  reemplazar(NOMBRE_AYUDA, formatoAyuda(n, teclas), 'formato AYUDA (F1)');
+  reemplazar(NOMBRE_PIE, formatoPie(n, teclas), 'pie de teclas PIE');
+  return { pantalla: n, agregados };
+}
+/**
+ * El formato que muestra la ayuda de teclas: AYUDA, o (en pantallas del CRUD) el que tiene el campo
+ * PAUSA para esperar el Enter. null si no hay.
+ */
+export function formatoDeAyuda(p: PantallaDSPF): Registro | null {
+  return (
+    p.registros.find((r) => r.nombre.toUpperCase() === NOMBRE_AYUDA) ??
+    p.registros.find((r) => r.clase === 'normal' && r.elementos.some((e) => e.tipo === 'campo' && e.nombre.toUpperCase() === 'PAUSA')) ??
+    null
+  );
 }

@@ -3,6 +3,7 @@ import { camposDelArchivo, incorporarCampos } from '@core/edicion/camposDeArchiv
 import type { EtiquetaCampo } from '@core/edicion/camposDeArchivo';
 import { tipoDeTabla } from '@core/tablas/modelo';
 import { useStore } from '../estado/store';
+import { useGuardado } from '../estado/guardado';
 import { resolverDesde, useTablas } from '../estado/storeTablas';
 
 const definicion = (c: { longitud: number; decimales: number; tipo: string }): string =>
@@ -55,6 +56,8 @@ export function DialogoCamposArchivo({ onCerrar }: { onCerrar: () => void }) {
         columna: Number(columna),
       });
       useStore.getState().aplicar(r.pantalla, { registro: regId, seleccionar: null });
+      // La barra de desplazamiento solo se avisa: el desarrollador decide cómo acomodar los campos.
+      if (r.avisos.length > 0) useGuardado.setState({ mensaje: `Atención: ${r.avisos.join(' ')}`, tipo: 'error' });
       onCerrar();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

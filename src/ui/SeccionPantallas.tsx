@@ -15,6 +15,9 @@ import { fuentesDePantalla } from './estado/fuentesEnvio';
 import { nombreCortoPantalla as nombreCorto } from './estado/nombres';
 import { ID_TODOS } from '@core/render/lienzo';
 import { DialogoCamposArchivo } from './componentes/DialogoCamposArchivo';
+import { asegurarTeclasYAyuda } from '@core/edicion/operaciones';
+import { useGuardado } from './estado/guardado';
+import { CamposSinPosicion } from './componentes/CamposSinPosicion';
 import { DialogoGenerarPrograma } from './componentes/DialogoGenerarPrograma';
 
 /** Sección de pantallas (DSPF): ver, editar y generar el DDS. */
@@ -43,6 +46,14 @@ export function SeccionPantallas() {
   const [nuevoRegistroAbierto, setNuevoRegistroAbierto] = useState(false);
   const [camposArchivoAbierto, setCamposArchivoAbierto] = useState(false);
   const [generarAbierto, setGenerarAbierto] = useState(false);
+
+  /** F1, F3 y F12 si faltan; AYUDA y PIE de nuevo, con las teclas que tenga la pantalla. */
+  const teclasYAyuda = () => {
+    if (!pantalla) return;
+    const r = asegurarTeclasYAyuda(pantalla);
+    useStore.getState().aplicar(r.pantalla);
+    useGuardado.setState({ mensaje: `Teclas y ayuda: ${r.agregados.join(', ')}.`, tipo: 'ok' });
+  };
 
   const registro = registroDe(pantalla, registroSeleccionado);
   const verTodos = registroSeleccionado === ID_TODOS;
@@ -77,6 +88,15 @@ export function SeccionPantallas() {
         <button onClick={abrirCarpeta}>Abrir carpeta…</button>
         <button onClick={importarArchivos}>Importar fuentes…</button>
         <button onClick={() => setNuevaPantallaAbierta(true)}>Nueva pantalla…</button>
+        <button
+          type="button"
+          className="boton-secundario"
+          disabled={!pantalla}
+          title="Agrega F1 (ayuda), F3 (salir) y F12 (volver) si faltan, y arma de nuevo la ayuda AYUDA y el pie PIE con las teclas de la pantalla"
+          onClick={teclasYAyuda}
+        >
+          Teclas y ayuda
+        </button>
         <button
           type="button"
           className="boton-secundario"
@@ -229,7 +249,10 @@ export function SeccionPantallas() {
                   <BarraEdicion hayRegistro={registro !== null} />
                   {modoEdicion ? (
                     registro ? (
-                      <EditorPantalla pantalla={pantalla} registro={registro} />
+                      <>
+                        <EditorPantalla pantalla={pantalla} registro={registro} />
+                        <CamposSinPosicion registro={registro} />
+                      </>
                     ) : (
                       <p className="tenue">
                         {pantalla.registros.length === 0

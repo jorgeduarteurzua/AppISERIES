@@ -14,6 +14,7 @@ import { archivoDeReferencia, camposDelArchivo } from '../edicion/camposDeArchiv
 import type { CampoDeArchivo, ResolverArchivo } from '../edicion/camposDeArchivo';
 import type { Campo, IndicadorCond, Keyword, PantallaDSPF, Registro } from '../modelo/pantalla';
 import { parametroDe } from '../tablas/modelo';
+import { TECLAS_BASICAS, formatoDeAyuda } from '../edicion/operaciones';
 
 export type TipoProgramaPantalla = 'CBL' | 'CBLLE' | 'SQLCBL' | 'SQLCBLLE';
 
@@ -59,6 +60,21 @@ function envolver(palabras: string[], nivel: number, primera = ''): string[] {
 
 const usoEntrada = (c: Campo) => c.uso === 'entrada' || c.uso === 'ambos' || c.uso === 'oculto';
 const usoSalida = (c: Campo) => c.uso === 'salida' || c.uso === 'ambos' || c.uso === 'oculto' || c.uso === 'programa';
+/** Un campo del archivo una sola vez (en un subfile la llave puede estar visible y oculta). */
+function sinRepetir<T extends { archivo: CampoDeArchivo }>(lista: T[]): T[] {
+  return lista.filter((x, i) => lista.findIndex((y) => y.archivo.nombre === x.archivo.nombre) === i);
+}
+
+/** Campo de opción de un subfile (OPC u OPCION, de entrada). */
+const esOpcion = (c: Campo): boolean => /^OPC(ION)?$/i.test(c.nombre) && (c.uso === 'entrada' || c.uso === 'ambos');
+
+/** Opciones del subfile, como en el CRUD. */
+const OPCIONES = [
+  { valor: '2', texto: 'Modificar' },
+  { valor: '4', texto: 'Eliminar' },
+  { valor: '5', texto: 'Consultar' },
+];
+
 const camposDe = (r: Registro): Campo[] => r.elementos.filter((e): e is Campo => e.tipo === 'campo' && !e.sistema && e.nombre !== '');
 
 function indicadoresDe(r: Registro): number[] {
@@ -110,9 +126,14 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
   if (!RE_NOMBRE.test(dspf)) throw new Error('El nombre de la pantalla no es válido.');
   const sql = op.tipo === 'SQLCBL' || op.tipo === 'SQLCBLLE';
   const indara = p.keywordsArchivo.some((k) => k.nombre === 'INDARA');
+  const ayuda = formatoDeAyuda(p);
+  const faltan = TECLAS_BASICAS.filter((b) => !p.teclasFuncion.some((t) => t.numero === b.numero));
+  if (faltan.length > 0) adv.push(`La pantalla no tiene ${faltan.map((b) => `F${b.numero} (${b.texto})`).join(', ')}: agréguelas con «Teclas y ayuda» en Pantallas.`);
+  if (p.teclasFuncion.some((t) => t.numero === 1) && !ayuda) adv.push('La pantalla tiene F1 pero no el formato AYUDA: F1 queda para completar (agréguelo con «Teclas y ayuda»).');
   if (!indara) adv.push('La pantalla no tiene INDARA: el programa no maneja indicadores. Se recomienda agregar INDARA a la pantalla.');
 
-  const formatos = p.registros.filter((r) => r.clase !== 'subfile');
+  // La ayuda de teclas (AYUDA) no es un formato del flujo: la muestra F1.
+  const formatos = p.registros.filter((r) => r.clase !== 'subfile' && r !== ayuda);
   const inicial = formatos.find((r) => r.nombre.toUpperCase() === op.formatoInicial.toUpperCase());
   if (!inicial) throw new Error(`El formato ${op.formatoInicial} no está en la pantalla (debe ser un formato normal o el control de un subfile).`);
   const sflDe = (c: Registro): Registro | null =>
@@ -215,6 +236,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
     areaA('77 NREL                  PIC 9(4).'),
     areaA('77 SALIR-WS              PIC X(1).'),
     areaA('77 HAY-REG               PIC X(1).'),
+    ...(p.registros.some((r) => r.clase === 'subfile' && camposDe(r).some(esOpcion)) ? [areaA('77 HAY-OPC               PIC X(1).')] : []),
     areaA('77 MENSAJE-WS            PIC X(78).'),
     areaA('77 I-ON                  PIC 1 VALUE B"1".'),
     areaA('77 I-OFF                 PIC 1 VALUE B"0".'),
@@ -292,14 +314,34 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
   };
   const mensajeEn = (r: Registro) => camposDe(r).find((c) => /^(MENSAJE|MSG|MENSAJ)/i.test(c.nombre) && usoSalida(c));
 
-  // Formatos que solo se escriben: antes del inicial, o después si usan su ventana (WINDOW(inicial)).
-  const escritos = p.registros.filter(soloEscritura);
-  const despues = (r: Registro) => parametroDe(r.keywords, 'WINDOW')?.trim().toUpperCase() === inicial.nombre.toUpperCase();
+  // Formatos que solo se escriben (el pie de teclas, mensajes): se escriben con cada formato.
+  // Un pie de pantalla completa va después de un formato de pantalla completa (si fuera antes, el
+  // formato sin OVERLAY lo borraría) y antes de una ventana (después, la quitaría). Uno con
+  // WINDOW(formato) va después de ese formato.
+  const escritos = p.registros.filter((r) => r !== ayuda && soloEscritura(r));
+  const ventanaDe = (r: Registro) => parametroDe(r.keywords, 'WINDOW')?.trim().toUpperCase() ?? null;
+  const esVentana = (r: Registro) => r.keywords.some((k) => k.nombre === 'WINDOW');
+  const escritosAntes = (r: Registro) => escritos.filter((x) => ventanaDe(x) === null && esVentana(r));
+  const escritosDespues = (r: Registro) =>
+    escritos.filter((x) => ventanaDe(x) === r.nombre.toUpperCase() || (ventanaDe(x) === null && !esVentana(r)));
   for (const r of escritos) {
     const lineas = escribir(r, 0);
     lineas[lineas.length - 1] += '.';
     t.push(...parrafo(`ESCRIBIR-${r.nombre}`), ...lineas, comentario());
   }
+  // F1: la ayuda de teclas (formato AYUDA), hasta que se presione Enter.
+  if (ayuda) {
+    const escrita = escribir(ayuda, 0);
+    t.push(
+      ...parrafo('MUESTRA-AYUDA'),
+      comentario(` F1: muestra las teclas de la pantalla (${ayuda.nombre}) y espera Enter.`),
+      ...escrita,
+      ...leer(ayuda, 0),
+      areaB('MOVE ZEROES TO MDTO.'),
+      comentario(),
+    );
+  }
+  const teclaPropia = (n: number, sfl: Registro | null) => n === 3 || n === 12 || (n === 1 && ayuda !== null) || (sfl !== null && n === 5);
 
   for (const r of formatos.filter((x) => !soloEscritura(x))) {
     const f = r.nombre;
@@ -309,8 +351,9 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
     const rama = (cond: string, ...sentencias: string[]) => ramas.push(areaB(`WHEN ${cond}`, 2), ...sentencias.map((s) => areaB(s, 3)));
     if (hayTecla(3)) rama('F3', 'MOVE "S" TO SALIR-WS');
     if (hayTecla(12)) rama('F12', `MOVE "S" TO FIN-${f}`);
+    if (hayTecla(1) && ayuda) rama('F1', 'PERFORM MUESTRA-AYUDA');
     if (sfl && hayTecla(5)) rama('F5', `PERFORM CARGAR-${sfl.nombre}`);
-    for (const k of teclas.filter((x) => ![3, 12].includes(x.numero) && !(sfl && x.numero === 5))) {
+    for (const k of teclas.filter((x) => !teclaPropia(x.numero, sfl))) {
       rama(`F${k.numero}`, `PERFORM TECLA-F${k.numero}-${f}`.slice(0, 41));
     }
     rama('INTRO', `PERFORM PROCESAR-${sfl ? sfl.nombre : f}`);
@@ -321,10 +364,11 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
       areaB(`MOVE "N" TO FIN-${f}`),
       areaB(`PERFORM UNTIL FIN-${f} = "S" OR SALIR-WS = "S"`),
       ...(msg ? [areaB(`MOVE MENSAJE-WS TO ${msg.nombre} OF ${f}-OO`, 1), areaB('MOVE SPACES     TO MENSAJE-WS', 1)] : []),
-      ...(r === inicial ? escritos.filter((x) => !despues(x)).map((x) => areaB(`PERFORM ESCRIBIR-${x.nombre}`, 1)) : []),
+      ...escritosAntes(r).map((x) => areaB(`PERFORM ESCRIBIR-${x.nombre}`, 1)),
       ...escribir(r, 1),
-      ...(r === inicial ? escritos.filter(despues).map((x) => areaB(`PERFORM ESCRIBIR-${x.nombre}`, 1)) : []),
+      ...escritosDespues(r).map((x) => areaB(`PERFORM ESCRIBIR-${x.nombre}`, 1)),
       ...leer(r, 1),
+      ...(sfl ? posicionDelCursor(r, 1) : []),
       areaB('EVALUATE TRUE', 1),
       ...ramas,
       areaB('END-EVALUATE', 1),
@@ -332,7 +376,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
       comentario(),
     );
     // Teclas: un párrafo para completar.
-    for (const k of teclas.filter((x) => ![3, 12].includes(x.numero) && !(sfl && x.numero === 5))) {
+    for (const k of teclas.filter((x) => !teclaPropia(x.numero, sfl))) {
       t.push(
         ...parrafo(`TECLA-F${k.numero}-${f}`),
         comentario(` F${k.numero}${k.texto ? ` (${k.texto.replace(/[^A-Za-z0-9 ]/g, '').slice(0, 14)})` : ''} en ${f}: escriba aqui lo que hace.`),
@@ -378,11 +422,12 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
     o.push(...parrafo(`LEER-${a}-${f}`), comentario(` Lee ${a} por su llave y muestra sus datos en ${f}.`));
     if (sql) {
       for (const k of u.llaves) o.push(areaB(`MOVE ${llavePantalla(k)} OF ${f}-II TO ${hv(k, a)}`));
-      const columnas = u.campos.map((c) => c.archivo.nombre);
+      const unicos = sinRepetir(u.campos);
+      const columnas = unicos.map((c) => c.archivo.nombre);
       o.push(
         areaB('EXEC SQL'),
         ...envolver(columnas.map((c, i) => `${c}${i < columnas.length - 1 ? ',' : ''}`), 1, 'SELECT'),
-        ...envolver(u.campos.map((c, i) => `:${hv(c.archivo, a)}${i < u.campos.length - 1 ? ',' : ''}`), 2, 'INTO'),
+        ...envolver(unicos.map((c, i) => `:${hv(c.archivo, a)}${i < unicos.length - 1 ? ',' : ''}`), 2, 'INTO'),
         areaB(`FROM ${tablaSql(a)}`, 1),
         ...u.llaves.map((k, i) => areaB(`${i === 0 ? 'WHERE' : '  AND'} ${k.nombre} = :${hv(k, a)}`, 1)),
         areaB('END-EXEC'),
@@ -402,7 +447,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
         comentario(),
       );
       // Agregar y modificar: quedan listos para llamarlos desde PROCESAR-f.
-      const enEntrada = u.campos.filter((c) => usoEntrada(c.pantalla));
+      const enEntrada = sinRepetir(u.campos.filter((c) => usoEntrada(c.pantalla)));
       if (enEntrada.length > 0) {
         o.push(
           ...parrafo(`AGREGAR-${a}-${f}`),
@@ -451,7 +496,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
         areaB('END-READ.'),
         comentario(),
       );
-      const enEntrada = u.campos.filter((c) => usoEntrada(c.pantalla));
+      const enEntrada = sinRepetir(u.campos.filter((c) => usoEntrada(c.pantalla)));
       if (enEntrada.length > 0) {
         o.push(
           ...parrafo(`AGREGAR-${a}-${f}`),
@@ -510,7 +555,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
       o.push(
         areaB('EXEC SQL'),
         areaB(`DECLARE ${cursor} CURSOR FOR`, 1),
-        ...envolver(u.campos.map((x, i) => `${x.archivo.nombre}${i < u.campos.length - 1 ? ',' : ''}`), 1, 'SELECT'),
+        ...envolver(sinRepetir(u.campos).map((x, i, l) => `${x.archivo.nombre}${i < l.length - 1 ? ',' : ''}`), 1, 'SELECT'),
         areaB(`FROM ${tablaSql(a)}`, 1),
         ...(u.llaves.length > 0 ? envolver(u.llaves.map((k, i) => `${k.nombre}${i < u.llaves.length - 1 ? ',' : ''}`), 1, 'ORDER BY') : []),
         areaB('END-EXEC'),
@@ -520,7 +565,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
         areaB(`PERFORM UNTIL SQLCODE NOT = 0 OR NREL >= ${maximo}`),
         areaB('EXEC SQL', 1),
         areaB(`FETCH ${cursor}`, 2),
-        ...envolver(u.campos.map((x, i) => `:${hv(x.archivo, a)}${i < u.campos.length - 1 ? ',' : ''}`), 3, 'INTO'),
+        ...envolver(sinRepetir(u.campos).map((x, i, l) => `:${hv(x.archivo, a)}${i < l.length - 1 ? ',' : ''}`), 3, 'INTO'),
         areaB('END-EXEC', 1),
         areaB('IF SQLCODE = 0', 1),
         ...aSubfile(2),
@@ -563,6 +608,7 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
     o.push(
       areaB('IF NREL > 0'),
       ...indicador(ctl, indicadorDe(ctl, 'SFLDSP'), true, 1),
+      ...(campoPosCur(ctl) ? [areaB(`MOVE 1 TO ${campoPosCur(ctl)} OF ${ctl.nombre}-OO`, 1)] : []),
       ...(sflend.length > 0 && fin ? [areaB(`IF ${fin}`, 1), ...sflend, areaB('ELSE', 1), ...sflendNo, areaB('END-IF', 1)] : sflend),
       areaB('ELSE'),
       ...indicador(ctl, indicadorDe(ctl, 'SFLDSP'), false, 1),
@@ -573,21 +619,172 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
     if (o[o.length - 1].trim() === '') o.pop();
     o[o.length - 1] += '.';
     o.push(comentario());
-    // Opciones: las filas que el usuario cambió.
+    const leerFila = (nivel: number) => [
+      areaB(`READ SUBFILE PANTALLA NEXT MODIFIED${tieneEntrada(sfl) ? ` INTO ${s}-II` : ''}`, nivel),
+      areaB(`FORMAT "${s}"`, nivel + 4),
+      areaB('END-READ', nivel),
+    ];
+    const opcion = camposDe(sfl).find(esOpcion);
+    if (!opcion) {
+      // Sin campo de opción: las filas modificadas, para completar.
+      o.push(
+        ...parrafo(`PROCESAR-${s}`),
+        comentario(` Filas de ${s} que el usuario modifico.`),
+        ...leerFila(0),
+        areaB('PERFORM UNTIL FS-PANTALLA NOT = "00"'),
+        comentario(`    Haga aqui lo que corresponde a la fila (${s}-II).`),
+        ...leerFila(1),
+        areaB('END-PERFORM.'),
+        comentario(),
+      );
+      return o;
+    }
+    // Con campo de opción: 2=Modificar, 4=Eliminar, 5=Consultar (como en el CRUD).
+    const regRel = campoRegRel(ctl);
+    const posCur = campoPosCur(ctl);
     o.push(
       ...parrafo(`PROCESAR-${s}`),
-      comentario(` Filas de ${s} que el usuario modifico (una opcion, p.ej.).`),
-      areaB(`READ SUBFILE PANTALLA NEXT MODIFIED${tieneEntrada(sfl) ? ` INTO ${s}-II` : ''}`),
-      areaB(`FORMAT "${s}"`, 4),
-      areaB('END-READ'),
+      comentario(` Filas de ${s} con una opcion escrita.`),
+      areaB('MOVE "N" TO HAY-OPC'),
+      ...leerFila(0),
       areaB('PERFORM UNTIL FS-PANTALLA NOT = "00"'),
-      comentario(`    Haga aqui lo que corresponde a la fila (${s}-II).`),
-      areaB(`READ SUBFILE PANTALLA NEXT MODIFIED${tieneEntrada(sfl) ? ` INTO ${s}-II` : ''}`, 1),
-      areaB(`FORMAT "${s}"`, 5),
-      areaB('END-READ', 1),
-      areaB('END-PERFORM.'),
+      areaB('MOVE "S" TO HAY-OPC', 1),
+      areaB(`EVALUATE ${opcion.nombre} OF ${s}-II`, 1),
+      ...OPCIONES.flatMap((x) => [areaB(`WHEN "${x.valor}"`, 2), areaB(`PERFORM OPCION-${x.valor}-${s}`, 3)]),
+      areaB('WHEN SPACES', 2),
+      areaB('CONTINUE', 3),
+      areaB('WHEN OTHER', 2),
+      areaB('MOVE "Opcion no valida." TO MENSAJE-WS', 3),
+      areaB('END-EVALUATE', 1),
+      ...leerFila(1),
+      areaB('END-PERFORM'),
+      // Se vuelve a cargar (para limpiar las opciones) y se queda en la página donde estaba el cursor.
+      areaB('IF HAY-OPC = "S"'),
+      areaB(`PERFORM CARGAR-${s}`, 1),
+      ...(regRel && posCur
+        ? [
+            areaB(`IF ${regRel} OF ${ctl.nombre}-II > 0`, 1),
+            areaB(`AND ${regRel} OF ${ctl.nombre}-II <= NREL`, 2),
+            areaB(`MOVE ${regRel} OF ${ctl.nombre}-II TO ${posCur} OF ${ctl.nombre}-OO`, 2),
+            areaB('END-IF', 1),
+          ]
+        : []),
+      areaB('END-IF.'),
       comentario(),
     );
+    o.push(...parrafosDeOpciones(sfl, u));
+    return o;
+  }
+
+  /** Campo oculto del control con SFLRCDNBR (la página que se muestra). */
+  function campoPosCur(ctl: Registro): string | null {
+    return camposDe(ctl).find((c) => c.keywords.some((k) => k.nombre === 'SFLRCDNBR'))?.nombre ?? null;
+  }
+
+  /** Campo que recibe el registro relativo del cursor (SFLCSRRRN(&CAMPO)). */
+  function campoRegRel(ctl: Registro): string | null {
+    const p = parametroDe(ctl.keywords, 'SFLCSRRRN')?.trim().replace(/^&/, '').toUpperCase();
+    return p && camposDe(ctl).some((c) => c.nombre.toUpperCase() === p) ? p : null;
+  }
+
+  /** Después de leer el control: se muestra la página donde quedó el cursor. */
+  function posicionDelCursor(ctl: Registro, nivel: number): string[] {
+    const regRel = campoRegRel(ctl);
+    const posCur = campoPosCur(ctl);
+    if (!regRel || !posCur) return [];
+    return [
+      areaB(`IF ${regRel} OF ${ctl.nombre}-II > 0`, nivel),
+      areaB(`MOVE ${regRel} OF ${ctl.nombre}-II TO ${posCur} OF ${ctl.nombre}-OO`, nivel + 1),
+      areaB('END-IF', nivel),
+    ];
+  }
+
+  /** Párrafos de las opciones 2, 4 y 5 de un subfile. Con la llave en la fila, quedan hechos. */
+  function parrafosDeOpciones(sfl: Registro, u: UsoArchivo | undefined): string[] {
+    const s = sfl.nombre;
+    const o: string[] = [];
+    // De dónde sale la llave de la fila: un campo de entrada u oculto del subfile con su REFFLD.
+    const llaveFila = u
+      ? u.llaves.map((k) => ({ k, campo: u.campos.find((c) => c.archivo.nombre === k.nombre && usoEntrada(c.pantalla))?.pantalla.nombre ?? null }))
+      : [];
+    const conLlave = u !== undefined && llaveFila.length > 0 && llaveFila.every((x) => x.campo !== null);
+    if (u && !conLlave) {
+      adv.push(`${s}: no tiene la llave de ${u.archivo} como campo oculto o de entrada; las opciones quedan para completar (use «Campos de un archivo…» o agregue HKnn ocultos con REFFLD).`);
+    }
+    // Formato donde se muestra un registro (el que lee el archivo por la llave).
+    const detalle =
+      u && conLlave
+        ? formatos.find(
+            (f) =>
+              f.clase === 'normal' &&
+              !soloEscritura(f) &&
+              usoDe(f).some((x) => x.archivo === u.archivo && x.llaves.length > 0 && x.llaves.every((k) => x.campos.some((c) => c.archivo.nombre === k.nombre && usoEntrada(c.pantalla)))),
+          )
+        : undefined;
+    const usoDetalle = detalle && u ? usoDe(detalle).find((x) => x.archivo === u.archivo) : undefined;
+    for (const x of OPCIONES) {
+      o.push(...parrafo(`OPCION-${x.valor}-${s}`), comentario(` ${x.valor}=${x.texto} en una fila de ${s}.`));
+      if (!u || !conLlave) {
+        o.push(comentario(' Escriba aqui lo que hace la opcion.'), areaB('CONTINUE.'), comentario());
+        continue;
+      }
+      const a = u.archivo;
+      if (x.valor === '4') {
+        if (sql) {
+          o.push(
+            ...llaveFila.map((l) => areaB(`MOVE ${l.campo} OF ${s}-II TO ${hv(l.k, a)}`)),
+            areaB('EXEC SQL'),
+            areaB(`DELETE FROM ${tablaSql(a)}`, 1),
+            ...llaveFila.map((l, i) => areaB(`${i === 0 ? 'WHERE' : '  AND'} ${l.k.nombre} = :${hv(l.k, a)}`, 1)),
+            areaB('END-EXEC'),
+            areaB('IF SQLCODE = 0'),
+            areaB('MOVE "Registro eliminado." TO MENSAJE-WS', 1),
+            areaB('ELSE'),
+            areaB('MOVE SQLCODE TO SQLCODE-ED', 1),
+            areaB('STRING "Error SQL " SQLCODE-ED DELIMITED BY SIZE', 1),
+            areaB('INTO MENSAJE-WS END-STRING', 3),
+            areaB('END-IF.'),
+            comentario(),
+          );
+        } else {
+          o.push(
+            ...llaveFila.map((l) => areaB(`MOVE ${l.campo} OF ${s}-II TO ${l.k.nombre} OF REG-${a}`)),
+            areaB(`DELETE ${a} RECORD`),
+            areaB('INVALID KEY', 1),
+            areaB(`MOVE "No se pudo eliminar de ${a}." TO MENSAJE-WS`, 2),
+            areaB('NOT INVALID KEY', 1),
+            areaB('MOVE "Registro eliminado." TO MENSAJE-WS', 2),
+            areaB('END-DELETE.'),
+            comentario(),
+          );
+        }
+        continue;
+      }
+      // 2 y 5: se lee el registro y se muestra en el formato de detalle.
+      if (!detalle || !usoDetalle) {
+        o.push(
+          comentario(` La llave de la fila: ${llaveFila.map((l) => `${l.campo} OF ${s}-II`).join(', ')}.`),
+          comentario(' Lea el registro y muestrelo en el formato de detalle.'),
+          areaB('CONTINUE.'),
+          comentario(),
+        );
+        continue;
+      }
+      const f = detalle.nombre;
+      o.push(
+        ...(x.valor === '2' ? [comentario(` En ${f}, con INTRO, use MODIFICAR-${a}-${f} para grabar.`)] : []),
+        ...(x.valor === '5' ? [comentario(` Para solo consultar, proteja los campos de ${f} (DSPATR(PR)).`)] : []),
+        ...llaveFila.map((l) => {
+          const destino = usoDetalle.campos.find((c) => c.archivo.nombre === l.k.nombre && usoEntrada(c.pantalla))!.pantalla.nombre;
+          return areaB(`MOVE ${l.campo} OF ${s}-II TO ${destino} OF ${f}-II`);
+        }),
+        areaB(`PERFORM LEER-${a}-${f}`),
+        areaB('IF HAY-REG = "S"'),
+        areaB(`PERFORM MOSTRAR-${f}`, 1),
+        areaB('END-IF.'),
+        comentario(),
+      );
+    }
     return o;
   }
 
@@ -598,5 +795,6 @@ export function generarProgramaPantalla(p: PantallaDSPF, op: OpcionesProgramaPan
 
 /** Formatos por los que puede partir el programa (normales y controles de subfile). */
 export function formatosIniciales(p: PantallaDSPF): string[] {
-  return p.registros.filter((r) => r.clase !== 'subfile').map((r) => r.nombre);
+  const ayuda = formatoDeAyuda(p);
+  return p.registros.filter((r) => r.clase !== 'subfile' && r !== ayuda).map((r) => r.nombre);
 }

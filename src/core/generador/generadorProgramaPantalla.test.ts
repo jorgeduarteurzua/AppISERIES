@@ -20,6 +20,7 @@ const resolver = (n: string) => (n === 'CLIENTES' ? PF : null);
 const DDS = [
   '     A                                      DSPSIZ(24 80 *DS3)',
   '     A                                      INDARA',
+  "     A                                      CF01(01 'Ayuda')",
   "     A                                      CF03(03 'Salir')",
   "     A                                      CF05(05 'Renovar')",
   "     A                                      CF06(06 'Nuevo')",
@@ -28,14 +29,18 @@ const DDS = [
   '     A            OPC            1A  B  6  2',
   '     A            RUT       R        O  6  5REFFLD(RUT CLIENTES)',
   '     A            NOMBRE    R        O  6 16REFFLD(NOMBRE CLIENTES)',
+  '     A            HK01      R        H      REFFLD(RUT CLIENTES)',
   '     A          R C01                       SFLCTL(S01)',
   '     A                                      SFLSIZ(0500)',
   '     A                                      SFLPAG(0012)',
+  '     A                                      SFLCSRRRN(&REGREL)',
   '     A                                      OVERLAY',
   '     A  30                                  SFLDSP',
   '     A  31                                  SFLDSPCTL',
   '     A  32                                  SFLCLR',
   '     A  30                                  SFLEND(*MORE)',
+  '     A            POSCUR         4S 0H      SFLRCDNBR(CURSOR)',
+  '     A            REGREL         5S 0H',
   "     A                                  1  2'Clientes'",
   '     A          R P01                       OVERLAY',
   "     A                                 23  2'F3=Salir  F5=Renovar'",
@@ -44,6 +49,10 @@ const DDS = [
   '     A            NOMBRE    R        B  5 20REFFLD(NOMBRE CLIENTES)',
   '     A            SALDO     R        O  6 20REFFLD(SALDO CLIENTES)',
   '     A            MENSAJE       70A  O 22  2',
+  '     A          R AYUDA                     WINDOW(5 20 8 36)',
+  "     A                                  1  2'Teclas de funcion'",
+  "     A                                  3  2'F1=Ayuda'",
+  '     A            PAUSA          1A  B  6 30DSPATR(ND)',
 ].join('\n') + '\n';
 const pantalla = parsearDspf(DDS, 'CLIENTED');
 
@@ -80,11 +89,11 @@ describe('programa desde una pantalla: esqueleto', () => {
     expect(cobol).not.toContain('COPY DDS-P01-I');
     for (const n of [3, 5, 6, 12]) expect(cobol).toMatch(new RegExp(`88 F${n} +VALUE ${String(n).padStart(2, '0')}\\.`));
   });
-  it('parte por el formato elegido; el pie se escribe antes; F3 sale, F12 vuelve, cada tecla tiene su párrafo', () => {
+  it('parte por el formato elegido; el pie se escribe después; F3 sale, F12 vuelve, cada tecla tiene su párrafo', () => {
     expect(parrafo(cobol, 'PRINCIPAL')).toContain('PERFORM MOSTRAR-C01');
     const mostrar = parrafo(cobol, 'MOSTRAR-C01');
     expect(mostrar.indexOf('PERFORM CARGAR-S01')).toBeGreaterThan(0);
-    expect(mostrar.indexOf('PERFORM ESCRIBIR-P01')).toBeLessThan(mostrar.indexOf('FORMAT "C01"'));
+    expect(mostrar.indexOf('PERFORM ESCRIBIR-P01')).toBeGreaterThan(mostrar.indexOf('FORMAT "C01"'));
     expect(mostrar).toMatch(/WHEN F3\n +MOVE "S" TO SALIR-WS/);
     expect(mostrar).toMatch(/WHEN F12\n +MOVE "S" TO FIN-C01/);
     expect(mostrar).toMatch(/WHEN F5\n +PERFORM CARGAR-S01/);
@@ -188,7 +197,7 @@ describe('programa desde una pantalla: casos', () => {
 describe('programa desde una pantalla: detalles', () => {
   it('SFLEND solo con filas y cuando ya no quedan datos', () => {
     const cargar = parrafo(generarProgramaPantalla(pantalla, opciones('CBL')).cobol, 'CARGAR-S01');
-    expect(cargar).toMatch(/IF NREL > 0\n +MOVE I-ON  TO IN30 OF C01-O-INDIC\n +IF HAY-REG = "N"\n +MOVE I-ON  TO IN30/);
+    expect(cargar).toMatch(/IF NREL > 0\n +MOVE I-ON  TO IN30 OF C01-O-INDIC\n +MOVE 1 TO POSCUR OF C01-OO\n +IF HAY-REG = "N"\n +MOVE I-ON  TO IN30/);
     expect(cargar).not.toMatch(/END-IF\n +MOVE I-ON  TO IN30 OF C01-O-INDIC\.?\n/);
   });
   it('un archivo UNIQUE no lleva WITH DUPLICATES', () => {
@@ -196,5 +205,73 @@ describe('programa desde una pantalla: detalles', () => {
     const { cobol } = generarProgramaPantalla(pantalla, opciones('CBL', { resolverArchivo: (n) => (n === 'CLIENTES' ? unico : null) }));
     expect(cobol).not.toContain('WITH DUPLICATES');
     expect(generarProgramaPantalla(pantalla, opciones('CBL')).cobol).toContain('WITH DUPLICATES');
+  });
+});
+
+describe('programa desde una pantalla: opciones del subfile y registro relativo', () => {
+  const nativo = generarProgramaPantalla(pantalla, opciones('CBL')).cobol;
+  const conSql = generarProgramaPantalla(pantalla, opciones('SQLCBL')).cobol;
+
+  it('PROCESAR evalúa la opción 2, 4 y 5, y vuelve a cargar quedándose en la página del cursor', () => {
+    const procesar = parrafo(nativo, 'PROCESAR-S01');
+    expect(procesar).toContain('EVALUATE OPC OF S01-II');
+    for (const n of ['2', '4', '5']) expect(procesar).toMatch(new RegExp(`WHEN "${n}"\\n +PERFORM OPCION-${n}-S01`));
+    expect(procesar).toContain('MOVE "Opcion no valida." TO MENSAJE-WS');
+    expect(procesar).toMatch(/IF HAY-OPC = "S"\n +PERFORM CARGAR-S01\n +IF REGREL OF C01-II > 0\n +AND REGREL OF C01-II <= NREL\n +MOVE REGREL OF C01-II TO POSCUR OF C01-OO/);
+    expect(nativo).toContain('77 HAY-OPC               PIC X(1).');
+  });
+  it('2 y 5 llevan la llave oculta al detalle, lo leen y lo muestran', () => {
+    for (const n of ['2', '5']) {
+      const p = parrafo(nativo, `OPCION-${n}-S01`);
+      expect(p, n).toMatch(/MOVE HK01 OF S01-II TO RUT OF R01-II\n +PERFORM LEER-CLIENTES-R01\n +IF HAY-REG = "S"\n +PERFORM MOSTRAR-R01/);
+    }
+    expect(parrafo(nativo, 'OPCION-2-S01')).toContain('MODIFICAR-CLIENTES-R01');
+  });
+  it('4 elimina por la llave: DELETE nativo o DELETE de SQL', () => {
+    expect(parrafo(nativo, 'OPCION-4-S01')).toMatch(/MOVE HK01 OF S01-II TO RUT OF REG-CLIENTES\n +DELETE CLIENTES RECORD/);
+    expect(parrafo(conSql, 'OPCION-4-S01')).toMatch(/MOVE HK01 OF S01-II TO RUT-CLIENTES\n +EXEC SQL\n +DELETE FROM CLIENTES\n +WHERE RUT = :RUT-CLIENTES/);
+  });
+  it('el control muestra la página donde quedó el cursor; la carga parte en la primera', () => {
+    expect(parrafo(nativo, 'MOSTRAR-C01')).toMatch(/END-READ\n +IF REGREL OF C01-II > 0\n +MOVE REGREL OF C01-II TO POSCUR OF C01-OO/);
+    expect(parrafo(nativo, 'CARGAR-S01')).toContain('MOVE 1 TO POSCUR OF C01-OO');
+    expect(parrafo(nativo, 'CARGAR-S01')).toContain('MOVE RUT OF REG-CLIENTES TO HK01 OF S01-OO');
+  });
+  it('con SQL la llave visible y oculta no repite la columna', () => {
+    const cargar = parrafo(conSql, 'CARGAR-S01');
+    expect(cargar).toMatch(/SELECT RUT, NOMBRE\n/);
+    expect(cargar).toMatch(/INTO :RUT-CLIENTES, :NOMBRE-CLIENTES\n/);
+    expect(cargar).toContain('MOVE RUT-CLIENTES TO HK01 OF S01-OO');
+  });
+  it('sin la llave en el subfile, las opciones quedan para completar y se avisa', () => {
+    const sinLlave = generarProgramaPantalla(parsearDspf(DDS.replace(/.*HK01.*\n/, ''), 'X'), opciones('CBL'));
+    expect(sinLlave.advertencias.join(' ')).toMatch(/S01: no tiene la llave de CLIENTES/);
+    expect(parrafo(sinLlave.cobol, 'OPCION-4-S01')).toContain('Escriba aqui lo que hace la opcion.');
+  });
+  it('ninguna línea pasa de la columna 72', () => {
+    for (const l of [...nativo.split('\n'), ...conSql.split('\n')]) expect(l.length, l).toBeLessThanOrEqual(72);
+  });
+});
+
+describe('programa desde una pantalla: F1, F3 y F12', () => {
+  const { cobol } = generarProgramaPantalla(pantalla, opciones('CBL'));
+  it('F1 muestra el formato AYUDA y espera Enter; AYUDA no es un formato del flujo', () => {
+    expect(formatosIniciales(pantalla)).not.toContain('AYUDA');
+    const ayuda = parrafo(cobol, 'MUESTRA-AYUDA');
+    expect(ayuda).toMatch(/WRITE R-PANTALLA FROM AYUDA-OO FORMAT "AYUDA"/);
+    expect(ayuda).toMatch(/READ PANTALLA INTO AYUDA-II FORMAT "AYUDA"/);
+    expect(ayuda).toContain('MOVE ZEROES TO MDTO.');
+    for (const f of ['C01', 'R01']) expect(parrafo(cobol, `MOSTRAR-${f}`), f).toMatch(/WHEN F1\n +PERFORM MUESTRA-AYUDA/);
+    expect(cobol).not.toContain('TECLA-F1-');
+    expect(cobol).not.toContain('MOSTRAR-AYUDA');
+  });
+  it('el pie se escribe con cada formato de pantalla completa', () => {
+    expect(parrafo(cobol, 'MOSTRAR-R01')).toMatch(/FORMAT "R01"\n.*\n +PERFORM ESCRIBIR-P01/);
+  });
+  it('avisa si faltan F1, F3 o F12, o si F1 no tiene AYUDA', () => {
+    const sinTeclas = parsearDspf(DDS.replace(/.*CF0[13].*\n/g, '').replace(/.*R AYUDA[\s\S]*$/, ''), 'X');
+    const r = generarProgramaPantalla(sinTeclas, opciones('CBL'));
+    expect(r.advertencias.join(' ')).toMatch(/no tiene F1 \(Ayuda\), F3 \(Salir\)/);
+    const sinAyuda = parsearDspf(DDS.replace(/.*R AYUDA[\s\S]*$/, ''), 'X');
+    expect(generarProgramaPantalla(sinAyuda, opciones('CBL')).advertencias.join(' ')).toMatch(/F1 pero no el formato AYUDA/);
   });
 });

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { PantallaDSPF, Registro, TamanoPantalla } from '@core/modelo/pantalla';
 import { parsearDspf } from '@core/parser/parserDspf';
 import { ID_TODOS } from '@core/render/lienzo';
-import { crearPantalla } from '@core/edicion/operaciones';
+import { asegurarTeclasYAyuda, crearPantalla } from '@core/edicion/operaciones';
 import { confirmarDescarte } from './descartar';
 import { vigilarCarpeta } from './vigilancia';
 import {
@@ -242,7 +242,8 @@ export const useStore = create<EstadoApp>((set, get) => ({
 
   nuevaPantalla: (nombre, tamano) => {
     if (!confirmarDescarte(get().modificado)) return;
-    const pantalla = crearPantalla(nombre, tamano);
+    // Toda pantalla nueva nace con F1 (ayuda), F3 (salir), F12 (volver), su ayuda AYUDA y el pie PIE.
+    const pantalla = asegurarTeclasYAyuda(crearPantalla(nombre, tamano)).pantalla;
     set({
       pantalla,
       nombreArchivoActual: nombre,

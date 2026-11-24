@@ -6,13 +6,15 @@ import {
   agregarConstante,
   agregarRegistro,
   agregarTecla,
+  asegurarTeclasYAyuda,
   crearPantalla,
   establecerVentana,
   moverElemento,
 } from './operaciones';
 import type { PantallaDSPF } from '../modelo/pantalla';
 
-const base = () => crearPantalla('PANT1');
+// Como una pantalla nueva: con F1, F3, F12, AYUDA y PIE (sin ellos hay avisos).
+const base = () => asegurarTeclasYAyuda(crearPantalla('PANT1')).pantalla;
 const regId = (p: PantallaDSPF) => p.registros[0].id;
 
 function mensajes(problemas: Problema[], nivel?: Problema['nivel']): string[] {
@@ -154,9 +156,9 @@ describe('validar', () => {
   });
 
   it('valida el número y la repetición de las teclas de función', () => {
-    let p = agregarTecla(base(), { tipo: 'CF', numero: 3 });
-    p = agregarTecla(p, { tipo: 'CA', numero: 3 });
-    expect(mensajes(validar(p), 'aviso').join(' ')).toMatch(/03 está definida 2 veces/);
+    let p = agregarTecla(base(), { tipo: 'CF', numero: 5 });
+    p = agregarTecla(p, { tipo: 'CA', numero: 5 });
+    expect(mensajes(validar(p), 'aviso').join(' ')).toMatch(/05 está definida 2 veces/);
 
     p = agregarTecla(p, { tipo: 'CF', numero: 25 });
     expect(mensajes(validar(p), 'error').join(' ')).toMatch(/entre 1 y 24/);

@@ -10,6 +10,7 @@
 import type { Campo, IndicadorCond, Keyword, PantallaDSPF, Registro } from '../modelo/pantalla';
 import { cajasElementos, dimensionElemento, marcoDe, type Caja } from '../render/geometria';
 import { ventanaDe } from '../render/lienzo';
+import { NOMBRE_AYUDA, TECLAS_BASICAS, formatoDeAyuda, textoDeTecla } from './operaciones';
 
 export interface Problema {
   nivel: 'error' | 'aviso';
@@ -308,6 +309,41 @@ function validarRegistro(p: PantallaDSPF, r: Registro, salida: Problema[]): void
     validarCampo(el, marco, donde, b, nombresCampos, salida);
   }
 
+  // Con SFLEND(*SCRBAR) la barra de desplazamiento ocupa el borde derecho: ningún elemento del
+  // subfile puede llegar hasta ahí (CPD8186). Solo se avisa: el desarrollador decide cómo acomodarlo.
+  if (r.clase === 'subfile') {
+    const control = p.registros.find((x) => x.clase === 'control-subfile' && x.subfileControlado === r.nombre);
+    const barra = control?.keywords.some((k) => k.nombre === 'SFLEND' && /\*SCRBAR/i.test(k.parametros));
+    if (barra) {
+      const limite = ultimaColumnaConBarra(marco);
+      for (const el of r.elementos) {
+        if (el.fila === null || el.columna === null) continue;
+        if (el.tipo === 'campo' && (el.uso === 'oculto' || el.uso === 'programa')) continue;
+        if (el.columna === 1) {
+          salida.push({
+            nivel: 'error',
+            mensaje:
+              `${donde}, ${etiqueta(el)}: empieza en la columna 1 y su atributo cae en la última columna de la fila `+
+              `anterior, donde va la barra de desplazamiento de SFLEND(*SCRBAR); debe empezar en la columna 2 o después (CPD8186).`,
+            regId: r.id,
+            elId: el.id,
+          });
+        }
+        const fin = el.columna + dimensionElemento(el, marco).ancho - 1;
+        if (fin > limite) {
+          salida.push({
+            nivel: 'error',
+            mensaje:
+              `${donde}, ${etiqueta(el)}: termina en la columna ${fin} y con SFLEND(*SCRBAR) la barra de desplazamiento ` +
+              `usa el borde derecho; debe terminar en la columna ${limite} o antes (CPD8186). Muévalo o acórtelo, o quite *SCRBAR.`,
+            regId: r.id,
+            elId: el.id,
+          });
+        }
+      }
+    }
+  }
+
   // Elementos superpuestos (se ignoran los condicionados por indicadores).
   const cajas = cajasElementos(p, r);
   const porId = new Map(r.elementos.map((e) => [e.id, e]));
@@ -450,6 +486,32 @@ export function validar(p: PantallaDSPF): Problema[] {
     }
   }
 
+  // F1 (ayuda), F3 (salir) y F12 (volver) en toda pantalla, y la ayuda con todas las teclas.
+  if (p.registros.length > 0) {
+    const faltan = TECLAS_BASICAS.filter((b) => !p.teclasFuncion.some((t) => t.numero === b.numero));
+    if (faltan.length > 0) {
+      salida.push({
+        nivel: 'aviso',
+        mensaje: `Faltan las teclas ${faltan.map((b) => `F${b.numero} (${b.texto})`).join(', ')}: use «Teclas y ayuda».`,
+      });
+    }
+    const ayuda = formatoDeAyuda(p);
+    if (p.teclasFuncion.some((t) => t.numero === 1) && !ayuda) {
+      salida.push({ nivel: 'aviso', mensaje: 'Hay F1 (ayuda) pero no el formato AYUDA que la muestra: use «Teclas y ayuda».' });
+    }
+    if (ayuda && ayuda.nombre.toUpperCase() === NOMBRE_AYUDA) {
+      const textos = ayuda.elementos.flatMap((e) => (e.tipo === 'constante' ? [e.texto] : [])).join(' ');
+      const sinAyuda = p.teclasFuncion.filter((t) => !textos.includes(`${textoDeTecla(t).split('=')[0]}=`));
+      if (sinAyuda.length > 0) {
+        salida.push({
+          nivel: 'aviso',
+          mensaje: `La ayuda AYUDA no lista ${sinAyuda.map((t) => `F${t.numero}`).join(', ')}: use «Teclas y ayuda» para actualizarla.`,
+          regId: ayuda.id,
+        });
+      }
+    }
+  }
+
   const nombresRegistros = new Map<string, number>();
   for (const r of p.registros) {
     const clave = r.nombre.toUpperCase();
@@ -465,4 +527,13 @@ export function validar(p: PantallaDSPF): Problema[] {
   }
 
   return salida;
+}
+
+/**
+ * Última columna (del marco) donde puede terminar un elemento de un subfile con SFLEND(*SCRBAR).
+ * A pantalla completa la barra y los bytes de atributo usan las 3 últimas columnas (el CRUD termina
+ * en la 77 de 80 y compila); en una ventana, las 2 últimas.
+ */
+export function ultimaColumnaConBarra(marco: ReturnType<typeof marcoDe>): number {
+  return marco.ventana ? marco.columnas - 2 : marco.columnas - 3;
 }

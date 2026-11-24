@@ -73,3 +73,45 @@ describe('Pantallas: campos de un archivo y programa', () => {
     expect(screen.getByLabelText('Programa generado').textContent).toContain('MOSTRAR-REG01');
   });
 });
+
+describe('Pantallas: campos ocultos y completar subfile', () => {
+  it('«+ Campo oculto» lo agrega sin posición, se ve en la lista y se selecciona', () => {
+    useStore.setState({ modoEdicion: true });
+    render(<SeccionPantallas />);
+    fireEvent.click(screen.getByRole('button', { name: '+ Campo oculto' }));
+    const lista = screen.getByRole('region', { name: 'Campos sin posición' });
+    const boton = within(lista).getByRole('button', { name: /OCULTO/ });
+    expect(boton.getAttribute('aria-pressed')).toBe('true');
+    const c = useStore.getState().pantalla!.registros[0].elementos[0];
+    expect(c).toMatchObject({ tipo: 'campo', uso: 'oculto', fila: null, columna: null });
+    expect(generarDspf(useStore.getState().pantalla!)).toMatch(/OCULTO\w* +10A  H/);
+  });
+
+  it('«Completar subfile» agrega lo del CRUD y avisa lo que no cabe', async () => {
+    const { parsearDspf } = await import('@core/parser/parserDspf');
+    const p = parsearDspf(
+      [
+        '     A                                      INDARA',
+        '     A          R WS01                      SFL',
+        '     A            RUT           10S 0O  8  4',
+        '     A          R WC01                      SFLCTL(WS01)',
+        '     A                                      SFLSIZ(0100)',
+        '     A                                      SFLPAG(0010)',
+        '     A  30                                  SFLDSP',
+        '     A  31                                  SFLDSPCTL',
+      ].join('\n') + '\n',
+      'PANTALLA1',
+    );
+    const ctl = p.registros.find((r) => r.nombre === 'WC01')!;
+    useStore.setState({ pantalla: p, registroSeleccionado: ctl.id, modoEdicion: true });
+    render(<SeccionPantallas />);
+    fireEvent.click(screen.getByRole('button', { name: 'Completar subfile' }));
+    const dds = generarDspf(useStore.getState().pantalla!);
+    expect(dds).toContain('SFLCSRRRN(&REGREL)');
+    expect(dds).toContain('SFLRCDNBR(CURSOR)');
+    expect(dds).toContain('OVERLAY');
+    const { useGuardado } = await import('../estado/guardado');
+    expect(useGuardado.getState().mensaje).toMatch(/no hay lugar para OPCION/);
+    expect(within(screen.getByRole('region', { name: 'Campos sin posición' })).getByText('REGREL')).toBeTruthy();
+  });
+});
